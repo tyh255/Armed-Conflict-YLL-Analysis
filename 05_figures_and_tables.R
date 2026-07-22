@@ -1,17 +1,7 @@
 # ============================================================================
 # 05_FIGURES_AND_TABLES.R
 # ----------------------------------------------------------------------------
-# Publication figures and tables in Nature Medicine style:
-#   - Clean classic theme, no chartjunk
-#   - Distinct, accessible colour palette
-#   - Bold panel titles, clear subtitle/caption
-#   - Figure 1: coverage trajectories per country with counterfactuals
-#   - Figure 2: forest plot of total YLLs per country-disease faceted by method
-#   - Figure 3: catch-up sensitivity (framing x method grid)
-#   - Table 1:  country x disease YLL totals at lambda=0
-#   - Table 2:  method comparison globals
-#   - Table S1: parameter source table
-# ============================================================================
+
 
 # ---- Palettes -------------------------------------------------------------
 nm_palette <- c(
@@ -26,8 +16,7 @@ nm_palette <- c(
   "Baseline (3yr)"    = "#3B5BA5",
   "Baseline (5yr)"    = "#8AA0C8"
 )
-# Method display order (no-control -> control-based; flat -> trend -> match ->
-# differencing). Used to order Figure-4 rows and legends.
+
 METHOD_ORDER <- c("Baseline (1yr)", "Baseline (3yr)", "Baseline (5yr)",
                   "ITS", "Synthetic Control",
                   "SC + covariates", "Augmented SC", "DiD (CS)")
@@ -88,33 +77,7 @@ fmt_ci <- function(mean_val, lo, hi, digits = 0, big = TRUE) {
   result
 }
 
-# ============================================================================
-# fig1_coverage_decline.R  -  REFACTORED FIGURE 1 (drop-in)
-# ----------------------------------------------------------------------------
-# Replaces make_fig1() in 05_figures_and_tables.R. Source this AFTER 05 (it
-# reuses theme_nm() and save_fig()), or paste the bodies over the old make_fig1.
-#
-# Design goals (Nature, visually striking, decline- and contrast-forward):
-#   * ONE figure covering all three antigens (BCG, DTP3, MCV1) instead of three
-#     near-identical single-antigen panels.
-#   * Panel a - coverage trajectories per country, antigens as bold colour lines;
-#     the COVERAGE LOSS (area between each antigen's pre-conflict level and its
-#     observed curve, from conflict onset onward) is shaded in the antigen colour
-#     so the decline reads instantly. Conflict window shaded; onset marked.
-#     Countries ordered worst -> least so the layout itself is a severity gradient.
-#   * Panel b - country x antigen heatmap of the percentage-point coverage drop,
-#     warm sequential ramp, values printed: the cross-country / cross-antigen
-#     contrast at a glance, in the SAME country order as panel a.
-#
-# Descriptive by design: Figure 1 tells the raw coverage-collapse story;
-# counterfactual estimators live in Figures 2/4. Decline is defined model-free
-# as (pre-conflict reference level) - (within-conflict trough), in points.
-#
-# Update 00_run_all.R: replace the three make_fig1()/save_fig() calls with one
-# (gap_df is accepted but unused, so the old positional order still works):
-#   fig1 <- make_fig1(coverage_long, gap_df, conflict_info)
-#   save_fig(fig1, "Figure_1_coverage_decline", width = 11, height = 9)
-# ============================================================================
+
 
 stopifnot(requireNamespace("ggplot2", quietly = TRUE))
 
@@ -225,8 +188,7 @@ VACCINE_LABS   <- c(BCG = "BCG (TB)", DTP3 = "DTP3 (diphtheria/pertussis/tetanus
 }
 
 # ---- public: refactored Figure 1 ------------------------------------------
-# gap_df kept in the signature for backward compatibility (no longer required;
-# Figure 1 is now descriptive). Returns a patchwork object; save with save_fig().
+
 make_fig1 <- function(coverage_long, gap_df = NULL,
                       conflict_df = if (exists("conflict_info")) conflict_info else NULL,
                       vaccines = VACCINE_LEVELS, ref_years = 3L) {
@@ -255,9 +217,6 @@ make_fig1 <- function(coverage_long, gap_df = NULL,
 }
 
 # ---- Figure 2: Forest plot of YLLs ---------------------------------------
-# NOTE (recommendation #2): undiscounted is the headline metric (GBD-standard
-# descriptive burden). 3% discounting is retained as a sensitivity (Table 2 and
-# the `discount = "disc"` toggle).
 make_fig2 <- function(yll_country_df, lambda_focus = 0,
                       framing_focus = FRAMING_HEADLINE, discount = "undisc") {
   use_mean <- paste0("yll_", discount, "_total_mean")
@@ -336,13 +295,6 @@ make_fig3 <- function(yll_disease_df, discount = "undisc") {
 }
 
 # ---- Tables ---------------------------------------------------------------
-
-# F6: distinguish a true ITS null from a FLOORED zero. ITS returns exactly 0 for
-# all diseases in Ethiopia/Iraq because the rising pre-conflict trend's
-# counterfactual overtakes observed coverage (cf >= obs -> gap <= 0, floored to 0
-# YLL in 04). That is a structural limitation, not a true null, and not
-# comparable to the donor-based positives. Flag (country,disease) cells where ITS
-# was estimated, has a rising pre-trend, and a non-positive central gap.
 its_floored_flags <- function(gap_df, vaccine_disease_links) {
   if (!"slope_logit_per_yr" %in% names(gap_df)) return(tibble::tibble())
   gap_df %>%
@@ -356,12 +308,7 @@ its_floored_flags <- function(gap_df, vaccine_disease_links) {
       .groups = "drop")
 }
 
-# F5: headline totals. The SC-anchored headline silently drops Pakistan, Somalia
-# and Sri Lanka (SC has no cell there) = 22% of burden under DiD, Pakistan ~2.1M
-# alone. Report BOTH (i) the SC 7-country complete-case total, LABELLED as such,
-# and (ii) a 10-country total using a per-country best-available estimator
-# (prefer SC; fall back to DiD, then Baseline 3yr) so no country is silently 0.
-# CIs are draw-based. `yll_draws` is the per disease x country x method object.
+
 assemble_headline_totals <- function(yll_draws,
                                      anchor_priority = c("Synthetic Control",
                                                          "DiD (CS)", "Baseline (3yr)"),
@@ -418,13 +365,7 @@ make_table1 <- function(yll_country_df, framing_focus = FRAMING_HEADLINE,
 
 make_table2 <- function(yll_draws, framing_focus = FRAMING_HEADLINE,
                         catchup_focus = 0) {
-  # Draw-level complete-case aggregation (recommendation #4). Each method drops a
-  # different set of countries (SC fails without a donor pool; ITS fails with too
-  # short a pre-period). Summing each method over whatever it happens to cover
-  # makes the totals non-comparable, so we restrict each disease to the country
-  # set present under ALL methods, then sum the per-country DRAW VECTORS within
-  # method (CRN-correct), taking empirical quantiles. This replaces the prior
-  # symmetric-normal, cross-country-independent CI combination.
+
   agg <- aggregate_method_comparison_draws(yll_draws,
                                            catchup_focus = catchup_focus,
                                            framing_focus = framing_focus)
@@ -446,10 +387,6 @@ make_table2 <- function(yll_draws, framing_focus = FRAMING_HEADLINE,
 
 make_table_s1 <- function() {
   params %>%
-    # Drop supplementary-only rows (neonatal-tetanus arm: Seale CFR, maternal-TT
-    # VE). They remain in `params` for the TETANUS_ARM='neonatal' sensitivity but
-    # belong in the Table S1 note, not the primary table. Helper defined in 01;
-    # guard so this still runs if 01's helper is somehow unavailable.
     dplyr::filter(
       if (exists("is_supplementary_row"))
         !is_supplementary_row(parameter, population) else TRUE
@@ -479,25 +416,12 @@ save_tab <- function(tbl, file) {
   utils::write.csv(tbl, path, row.names = FALSE)
   message("Saved table: ", path)
 }
-# ============================================================================
-# Figure 4 | Method triangulation (Nature-style multi-panel comparison)
-# ----------------------------------------------------------------------------
-# Panel A  Event study: Callaway-Sant'Anna dynamic ATT on coverage by years
-#          since conflict onset (negative = conflict-attributable shortfall).
-#          The pre-onset coefficients are the parallel-trends falsification:
-#          they should sit on zero. (Sun-Abraham line overlaid if supplied.)
-# Panel B  Mean conflict-attributable coverage gap (pp) by estimator, with the
-#          baseline-window sensitivity (3yr/5yr) shown alongside. This is where
-#          the YLL differences originate, since YLL scales ~linearly in the gap.
-# Panel C  Total conflict-attributable YLL (undiscounted, no catch-up) by
-#          estimator: the bottom-line "do the methods agree?" panel.
-#
-# Inputs:
-#   gap_df            estimate_all_gaps_plus() output (carries attr 'event_study')
-#   global_by_method  aggregate_global_by_method_draws() output
-#   baseline_windows  gap_baseline_windows() output (optional; Panel B band)
-#   es_df             event-study tibble override (else attr(gap_df,'event_study'))
-#   sa_df             optional Sun-Abraham event study (did_event_study_sa())
+
+
+
+
+
+      
 make_fig4_method_comparison <- function(gap_df, global_by_method,
                                         baseline_windows = NULL,
                                         es_df = NULL, sa_df = NULL,
