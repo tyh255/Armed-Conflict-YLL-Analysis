@@ -1,27 +1,3 @@
-# ============================================================================
-# 05c_FIGURES_V2.R   -   Redesigned main figures (Nature spec)
-# ----------------------------------------------------------------------------
-# Four main figures, rebuilt to the brief and to Nature's artwork rules
-# (89 mm single / 183 mm double / 247 mm max height; Helvetica/Arial; panel
-# letters 8 pt bold lowercase upright; body text 5-7 pt; colour-blind-safe; no
-# red-green encoding; ticks + units on axes; thousands with commas).
-#
-#   Figure 1  Coverage decline, BROKEN OUT BY ANTIGEN (vaccine x country grid),
-#             coverage loss shaded RED; companion drop heatmap with an explicit,
-#             switchable decline metric (default = pre-conflict mean -> trough).
-#   Figure 2  Cause -> consequence in one 2x2: conflict coverage GAPS by country
-#             (a) and method (b); attributable YLL by country (c) and method (d).
-#   Figure 3  Triangulation: composite tornado (a); per-method draw-distribution
-#             ridgeline (b, colourful); 2-D density contour of the two inferential
-#             families draw-by-draw (c) - the CRN-linked triangulation.
-#   Figure 4  Per-capita intensity (a); onset-timing falsification (b); external
-#             validation heatmap vs GBD with over-attribution flagged (c).
-#
-# Source AFTER 05 / 05b / 06 / 08 / 09 / 10 (reuses theme_nm, nm_palette,
-# VACCINE_*, METHOD_ORDER, FIG4_* and the draw aggregators). Each builder takes
-# in-memory objects first and falls back to the saved CSVs, mirroring 05b.
-# ============================================================================
-
 suppressPackageStartupMessages({
   library(ggplot2); library(dplyr); library(tidyr)
 })
@@ -73,12 +49,6 @@ save_fig_nat <- function(plot, file, width_mm = NAT_W_DOUBLE, height_mm = 120,
 # ============================================================================
 # FIGURE 1  -  coverage decline, broken out by antigen
 # ============================================================================
-# Decline metric is now EXPLICIT and switchable (answers "is the heatmap the
-# first-year drop?" -> no, by default it is the maximum drop, pre-conflict mean
-# to within-conflict trough). Options:
-#   "trough"  pre-conflict mean  -> minimum coverage in the conflict window  (max drop)
-#   "onset"   pre-conflict mean  -> coverage in the FIRST conflict year      (on-impact)
-#   "endwin"  pre-conflict mean  -> coverage in the LAST conflict year       (sustained)
 .f1_decline <- function(coverage_long, conflict_df, vaccines = VACCINE_LEVELS,
                         ref_years = 3L, metric = c("trough", "onset", "endwin")) {
   metric <- match.arg(metric)
@@ -127,12 +97,7 @@ save_fig_nat <- function(plot, file, width_mm = NAT_W_DOUBLE, height_mm = 120,
     dplyr::filter(year >= conflict_start) %>%
     dplyr::mutate(ylo = pmin(coverage, pre_level), yhi = pre_level)
   
-  # Per-antigen y-range driven by the ACTUALLY OBSERVED coverage across all
-  # countries for that antigen (brief: if min observed BCG across the 10 countries
-  # is 40, the BCG row should start at 40). We free the y-scale per facet row
-  # (vaccine) and inject an invisible blank layer at each row's observed min/max
-  # (padded slightly) so every column in a row shares that antigen's data range
-  # rather than a forced 0-100 box. Bounds also cover the pre-conflict ribbon top.
+  
   yrng <- cov %>%
     dplyr::left_join(dplyr::select(decl, country, vaccine, pre_level),
                      by = c("country", "vaccine")) %>%
@@ -252,10 +217,6 @@ fig1_v2 <- function(coverage_long, conflict_df = if (exists("conflict_info")) co
 # ============================================================================
 # FIGURE 2  -  coverage gaps (a, b) -> attributable YLL (c, d)
 # ============================================================================
-# Coverage GAP (percentage points, counterfactual - observed) is keyed by
-# ANTIGEN in gap_df. Panels a/b use difference-in-differences as the common
-# estimator (available for all ten countries; the primary in the main text);
-# panel d shows every estimator's total to make the convergence explicit.
 .f2_post_gap <- function(gap_df, conflict_df, method_keep = NULL) {
   g <- gap_df %>%
     dplyr::inner_join(dplyr::select(conflict_df, country, conflict_start, conflict_end), by = "country") %>%
@@ -396,9 +357,6 @@ fig2_v2 <- function(gap_df, yll_draws, conflict_df = if (exists("conflict_info")
 # ============================================================================
 # FIGURE 3  -  triangulation
 # ============================================================================
-# Per-method draw-total vectors over a common country set (default: the
-# complete-case set shared by all methods) so the distributions and the
-# family-vs-family contour are CRN-aligned and comparable.
 .f3_method_draw_totals <- function(yll_draws, catchup_focus = 0,
                                    framing_focus = if (exists("FRAMING_HEADLINE")) FRAMING_HEADLINE else "campaign_topup",
                                    common_countries = TRUE) {
@@ -586,9 +544,7 @@ fig4_onset <- function(s2c = NULL, s2c_csv = NULL) {
   ord <- if (exists("METHOD_ORDER")) METHOD_ORDER else sort(unique(d$method))
   d <- d %>% dplyr::mutate(m = yll_undisc_mean / 1e6,
                            method = factor(method, levels = ord[ord %in% unique(method)]))
-  # Decluttered: one small panel per estimator (Nature-style faceted small
-  # multiples) instead of overplotting all methods on a single axis. A shared
-  # free y-scale keeps each estimator's onset response legible.
+  
   ggplot2::ggplot(d, ggplot2::aes(start_shift, m, colour = method, group = method)) +
     ggplot2::geom_vline(xintercept = 0, colour = "grey60", linewidth = 0.3, linetype = "22") +
     ggplot2::geom_line(linewidth = 0.6) +
