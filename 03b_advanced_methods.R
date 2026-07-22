@@ -1,44 +1,3 @@
-# ============================================================================
-# 03b_ADVANCED_METHODS.R   (new module)
-# ----------------------------------------------------------------------------
-# Adds three counterfactual estimators to triangulate alongside the original
-# Baseline / ITS / Synthetic-Control trio in 03_coverage_gap_methods.R:
-#
-#   (4) gap_synthetic_cov()  - Synthetic Control matching on lagged coverage
-#                              PLUS economic/development predictors
-#                              (log GDP per capita, expected years of schooling).
-#                              Tests whether conditioning the donor weights on
-#                              economic level/trajectory moves the counterfactual.
-#   (5) gap_augsynth()       - Augmented Synthetic Control (Ben-Michael, Feller &
-#                              Rothstein 2021): ridge-augmented SCM that bias-
-#                              corrects for imperfect pre-period fit. Directly
-#                              targets the main SC failure mode (poor pre-fit ->
-#                              biased post gap). Requires the {augsynth} package.
-#   (6) gap_did_cs()         - Staggered difference-in-differences, Callaway &
-#                              Sant'Anna (2021) ATT(g,t) with NEVER-TREATED
-#                              (donor) controls and an optional doubly-robust
-#                              covariate adjustment. Pools all 10 conflicts into
-#                              one comparison-group design, nets out common time
-#                              shocks (incl. COVID) via the control group, and
-#                              yields a built-in event study (pre-trend test).
-#                              Requires the {did} package. Sun & Abraham (2021)
-#                              event study available via did_event_study_sa().
-#
-# WHY THESE: Baseline (flat) and ITS (within-unit trend) have NO comparison
-# group, so they attribute every common shock in the conflict window - most
-# importantly COVID-19's 2020-21 coverage collapse - to conflict. SC, SC+cov,
-# augmented SC and DiD all use non-conflict donors, so a shock shared by donors
-# nets out of the gap. The six together span: no-control vs control-based; flat
-# vs trend vs level-match vs differencing; outcome-only vs economically-
-# conditioned matching. Agreement across them is the credibility argument.
-#
-# SOURCE ORDER: after 03_coverage_gap_methods.R (reuses build_donor_pool(),
-# DEFAULT_SEED, mvt_draws) and after 02b_econ_covariates.R (uses econ_panel /
-# ECON_PREDICTORS). Optional packages (augsynth, did, fixest) are checked at
-# call time; a missing package SKIPS that method with a message rather than
-# erroring, so the pipeline still runs the methods you do have installed.
-# ============================================================================
-
 stopifnot(exists("build_donor_pool"), exists("DEFAULT_SEED"))
 
 # Method labels (single source of truth; 05 palette keys off these).
@@ -49,10 +8,6 @@ METHOD_SC_COV   <- "SC + covariates"
 METHOD_AUGSC    <- "Augmented SC"
 METHOD_DID      <- "DiD (CS)"
 
-# Baseline pre-conflict averaging windows promoted to FIRST-CLASS methods
-# (1/3/5-yr by default) so all three appear as standard rows/columns in the gap,
-# YLL, and table outputs rather than only as a figure-only robustness band. The
-# 3-yr window is the headline baseline. Override via CVD_BASELINE_WINDOWS="1,3,5".
 BASELINE_WINDOWS         <- as.integer(strsplit(
   Sys.getenv("CVD_BASELINE_WINDOWS", unset = "1,3,5"), ",")[[1]])
 BASELINE_HEADLINE_WINDOW <- 3L
@@ -66,13 +21,6 @@ ALL_METHODS      <- c(METHOD_BASELINE_LABELS, METHOD_ITS, METHOD_SC,
 # ---------------------------------------------------------------------------
 # METHOD 4: Synthetic Control with economic/development covariates
 # ---------------------------------------------------------------------------
-# Identical donor-pool / placebo-inference machinery to gap_synthetic(), with
-# two additions:
-#   * the balanced panel carries the ECON_PREDICTORS columns (joined from
-#     econ_panel by country-year);
-#   * donors must additionally have non-missing covariates over the pre-window
-#     (else the predictor means are undefined and the QP weights fail);
-#   * one generate_predictor() call per available covariate (pre-window mean).
 gap_synthetic_cov <- function(coverage_df, conflict_df,
                               vaccines = c("BCG", "MCV1", "DTP3"),
                               econ = if (exists("econ_panel")) econ_panel else NULL,
@@ -122,11 +70,7 @@ gap_synthetic_cov <- function(coverage_df, conflict_df,
         dplyr::summarise(ok = all(!is.na(coverage))) %>% dplyr::pull(ok)
       if (!isTRUE(treated_pre_ok)) { message("    skipping (treated NA in pre-window)"); next }
       
-      # Donors complete on the OUTCOME over the full window AND with at least one
-      # non-missing value per covariate in the pre-window. Computed in two plain
-      # (non-data-masked) steps: a nested vapply over `.data[[p]]` inside a
-      # summarise() fails because dplyr's data mask cannot resolve the lambda's
-      # `p`, so the covariate check uses across() with all_of(preds) instead.
+    
       out_ok_ctry <- panel %>%
         dplyr::filter(country != ci$country) %>%
         dplyr::group_by(country) %>%
@@ -249,10 +193,6 @@ gap_synthetic_cov <- function(coverage_df, conflict_df,
 # ---------------------------------------------------------------------------
 # METHOD 5: Augmented Synthetic Control (ridge), {augsynth}
 # ---------------------------------------------------------------------------
-# Single-treated-unit augsynth per country x vaccine. progfunc="ridge", scm=TRUE
-# is the Ben-Michael et al. (2021) ridge-ASCM. Covariates (if available) enter
-# via the formula's `| cov` block. We read the per-period treatment-effect path
-# and its CI from summary(); gap = -effect (effect on coverage is negative).
 gap_augsynth <- function(coverage_df, conflict_df,
                          vaccines = c("BCG", "MCV1", "DTP3"),
                          econ = if (exists("econ_panel")) econ_panel else NULL,
@@ -278,14 +218,7 @@ gap_augsynth <- function(coverage_df, conflict_df,
       vacc_obs <- coverage_df %>%
         dplyr::filter(vaccine == vacc, !is.na(coverage))
       
-      # ADAPTIVE WINDOW. The old code required every donor to be complete across
-      # the full nominal pre+post window. That fails two ways: (a) the post
-      # window can run past the last data year (e.g. conflict_end 2024 but WUENIC
-      # ends 2023) so NO unit is "complete" -> 0 balanced donors; (b) early
-      # conflicts push the pre window into the data-sparse 1990s -> 0 donors.
-      # Instead, anchor the window to years the treated unit is observed AND at
-      # least min_donors non-conflict donors are observed, then require donor
-      # completeness only over THAT realised window.
+    
       treated_years <- sort(vacc_obs$year[vacc_obs$country == ci$country])
       donors_by_year <- vacc_obs %>%
         dplyr::filter(!ISO3 %in% conflict_iso3) %>%
@@ -300,11 +233,7 @@ gap_augsynth <- function(coverage_df, conflict_df,
                 length(post_obs), " post yrs; need >=", min_pre, "/1)"); next }
       analysis_years <- c(pre_obs, post_obs)
       
-      # Donors complete on the OUTCOME across the realised window (augsynth needs
-      # a balanced outcome panel). Covariates are intentionally dropped: the ridge
-      # augmentation already matches on pre-period outcome lags (standard ASCM),
-      # and covariate NAs were the source of augsynth's "missing value where
-      # TRUE/FALSE needed" error.
+      
       donors <- vacc_obs %>%
         dplyr::filter(!ISO3 %in% conflict_iso3, year %in% analysis_years) %>%
         dplyr::count(country, name = "n") %>%
@@ -368,22 +297,6 @@ gap_augsynth <- function(coverage_df, conflict_df,
 # ---------------------------------------------------------------------------
 # METHOD 6: Callaway & Sant'Anna (2021) staggered DiD, {did}
 # ---------------------------------------------------------------------------
-# Pools all conflicts into ONE comparison-group design per vaccine. Treated
-# units adopt at conflict_start (gname); controls are NEVER-TREATED donors
-# (gname = 0), so a shock shared by donors (COVID) nets out. ATT(g,t) maps to a
-# country-year coverage gap: gap = -ATT (ATT on coverage is negative). The CS
-# dynamic aggregation (event study) is attached as attr(.,"event_study") and the
-# overall ATT as attr(.,"overall") for Figure-4 panel A and reporting.
-#
-# CAVEATS surfaced rather than hidden:
-#   * Absorbing-treatment assumption: several conflicts END in-window (Pakistan,
-#     Sri Lanka, Iraq). We use NEVER-TREATED controls only and read ATT(g,t)
-#     ONLY for t in each country's [start,end], so reversal does not contaminate
-#     the used estimates. If you want to model recovery after conflict end,
-#     de Chaisemartin & D'Haultfoeuille (did_multiplegt_dyn) handles treatment
-#     switching off and is the cleaner choice there (one-line swap; see note).
-#   * Shared-onset cohorts (Sri Lanka & Somalia both 2006) share one ATT(2006,t);
-#     those two countries therefore receive the SAME DiD gap. Documented.
 gap_did_cs <- function(coverage_df, conflict_df,
                        vaccines = c("BCG", "MCV1", "DTP3"),
                        econ = if (exists("econ_panel")) econ_panel else NULL,
@@ -418,12 +331,7 @@ gap_did_cs <- function(coverage_df, conflict_df,
       dplyr::left_join(conflict_df %>%
                          dplyr::select(country, conflict_start, conflict_end),
                        by = "country") %>%
-      # F2: CENSOR post-conflict recovery years. att_gt would otherwise estimate
-      # ATT(g,t) for t after a cohort's conflict ended using that unit's recovery,
-      # and aggte(dynamic/group) would average those in -> contaminated event
-      # study / overall ATT for ended conflicts (Iraq, Pakistan, Sri Lanka).
-      # Dropping post-end treated rows removes the ended unit from the risk set
-      # after its end (donors untouched; allow_unbalanced_panel handles the gap).
+      
       dplyr::filter(year <= conflict_end) %>%
       dplyr::rename(first_treat = conflict_start) %>%
       dplyr::select(-conflict_end)
@@ -473,11 +381,7 @@ gap_did_cs <- function(coverage_df, conflict_df,
       message("    skipping ", vacc, " (too few never-treated controls)"); next }
     
     xformla   <- if (use_cov_here) stats::as.formula(paste("~", paste(preds, collapse = " + "))) else ~1
-    # Regression adjustment, NOT doubly-robust/IPW. Conflict and donor countries
-    # are structurally separated on GDP/HDI (conflict countries are systematically
-    # poorer), so the propensity-score model in "dr"/"ipw" hits perfect separation
-    # -> glm fitted probabilities at 0/1 -> "singular matrix 'a' in solve". Outcome
-    # regression fits no propensity model and is well-conditioned here.
+    
     est_method <- "reg"
     run_attgt <- function(xf, em) tryCatch(
       did::att_gt(yname = "coverage", tname = "year", idname = "id",
@@ -487,9 +391,7 @@ gap_did_cs <- function(coverage_df, conflict_df,
                   bstrap = TRUE, biters = 1000, print_details = FALSE),
       error = function(e) { message("    att_gt error: ", conditionMessage(e)); NULL })
     att <- run_attgt(xformla, est_method)
-    # The doubly-robust fit with covariates is the most failure-prone step
-    # (collinearity / weak overlap). Don't lose the whole vaccine over it:
-    # retry with the unconditional CS estimator before giving up.
+   
     if (is.null(att) && use_cov_here) {
       message("    retrying ", vacc, " without covariates (unconditional CS).")
       att <- run_attgt(~1, "reg")
@@ -497,9 +399,7 @@ gap_did_cs <- function(coverage_df, conflict_df,
     if (is.null(att)) next
     attgt_list[[vacc]] <- att
     
-    # Extract MP components to locals BEFORE building the table: inside tibble(),
-    # arguments evaluate sequentially, so a column named `att` would shadow the
-    # att_gt object and `att$se` would error ("$ invalid for atomic vectors").
+    
     .grp <- att$group; .yr <- att$t; .att <- att$att; .se <- att$se
     gt <- tibble::tibble(group = .grp, year = .yr, att = .att, se = .se)
     # Map ATT(g,t) -> per conflict-country-year gap within its window.
@@ -552,9 +452,6 @@ gap_did_cs <- function(coverage_df, conflict_df,
 # ---------------------------------------------------------------------------
 # Sun & Abraham (2021) event study companion, {fixest}
 # ---------------------------------------------------------------------------
-# Interaction-weighted event study (the estimator Tyler flagged). Returned as a
-# tidy (event_time, att, se) tibble for an alternative event-study line in the
-# comparison figure. Uses the SAME treated+never-treated panel logic as CS.
 did_event_study_sa <- function(coverage_df, conflict_df, vaccine = "MCV1",
                                donor_pre_len = 8L, min_year_frac = 0.8) {
   if (!requireNamespace("fixest", quietly = TRUE)) {
@@ -589,12 +486,8 @@ did_event_study_sa <- function(coverage_df, conflict_df, vaccine = "MCV1",
 }
 
 # ---------------------------------------------------------------------------
-# Baseline-window sensitivity (Tyler's "multiple baseline averages")
+# Baseline-window sensitivity
 # ---------------------------------------------------------------------------
-# Re-runs the flat baseline at several pre-conflict window lengths. Returned for
-# the comparison figure's gap panel as tagged rows; NOT fed into the heavy YLL
-# engine by default (it is a robustness band on one counterfactual family, not a
-# distinct causal logic).
 gap_baseline_windows <- function(coverage_df, conflict_df,
                                  vaccines = c("BCG", "MCV1", "DTP3"),
                                  windows = c(3L, 5L)) {
@@ -649,9 +542,7 @@ estimate_all_gaps_plus <- function(coverage_df, conflict_df,
                                    vaccines = c("BCG", "MCV1", "DTP3"),
                                    methods = ALL_METHODS, seed = DEFAULT_SEED) {
   pieces <- list(); es <- NULL; overall <- NULL
-  # Baseline family: emit one gap set per averaging window (1/3/5-yr) as a
-  # distinct method label. A bare "Baseline" request maps to the headline window
-  # for backward compatibility.
+  
   bw_requested <- intersect(METHOD_BASELINE_LABELS, methods)
   if (METHOD_BASELINE %in% methods)
     bw_requested <- union(bw_requested, baseline_label(BASELINE_HEADLINE_WINDOW))
@@ -702,11 +593,6 @@ estimate_all_gaps_plus <- function(coverage_df, conflict_df,
 # ---------------------------------------------------------------------------
 # Global (all-country, all-disease) YLL total per METHOD, draw-level, CRN-correct
 # ---------------------------------------------------------------------------
-# For Figure-4 panel C ("do the methods agree on the bottom line?"). Restricts to
-# (disease, country) cells present under ALL methods being compared, then sums
-# the per-country period-total draw vectors across every cell within a method
-# (same draw index k), preserving the shared structural correlation. Returns one
-# row per method with draw-based mean / 2.5% / 97.5%.
 aggregate_global_by_method_draws <- function(yll_draws, methods = NULL,
                                              catchup_focus = 0,
                                              framing_focus = "campaign_topup") {
