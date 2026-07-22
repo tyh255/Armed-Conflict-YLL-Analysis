@@ -1,32 +1,3 @@
-# ============================================================================
-# 09_STRUCTURED_SENSITIVITY.R   (supplementary; PRIMARY spec unchanged)
-# ----------------------------------------------------------------------------
-# One-at-a-time ("tornado") sensitivity that locates the HEADLINE total within
-# the full structural-parameter space, the standard way burden papers present
-# structural uncertainty and the direct answer to "is the headline at the
-# maximal corner?". The central case is the headline: an anchor counterfactual
-# method, undiscounted, no catch-up (lambda=0), campaign_topup framing, GBD
-# reference life table, measles multiplier OFF, TB treatment-weighted CFR.
-#
-# Each axis is perturbed singly and the global total (sum over the anchor
-# method's complete cells, draw-level) recomputed. Axes that are EXACT from the
-# existing draws (discounting, catch-up, framing) are computed directly. Axes
-# that act as a multiplicative scale on a disease's or country's death rate are
-# computed by RESCALING the existing draw vectors -- exact in expectation for a
-# CFR/L multiplier (it enters the death/YLL product linearly), flagged "approx"
-# because it uses the mean factor rather than re-drawing the correlated
-# structural parameter:
-#   * measles multiplier ON  : x E[mult] ~ 2.43 on measles cells
-#   * local life table        : x (national LE over window / reference ex0) per country
-#   * TB untreated CFR        : x (0.436 / CFR_eff_central) on TB cells
-#   * TB treatment coverage   : x (CFR_eff(p) / CFR_eff_central) on TB cells
-# The ITS horizon axis changes WHICH years enter the gap (not a scale), so it is
-# NOT auto-computed; re-run with CVD_ITS_MAX_HORIZON and add via merge_rerun().
-#
-# Source AFTER 04/05 and 01b (uses yll_raw$draws, covariates_panel,
-# conflict_info, ref_ex_at_age, save_fig/save_tab).
-# ============================================================================
-
 # Reference ex0 (headline life table) and central TB effective CFR.
 .REF_EX0 <- if (exists("ref_ex_at_age")) ref_ex_at_age(0) else 88.8718951
 .CFR_TB_UNTREATED <- 0.436
@@ -60,12 +31,7 @@
     dplyr::select(country, le_factor = factor)
 }
 
-# Per-(disease,country) best-available method map for the COMPOSITE headline,
-# mirroring assemble_headline_totals() in 05 EXACTLY (same anchor_priority and
-# slice_min), so the tornado is anchored on the SAME 12.6M number the headline
-# reports -- not the 7-country SC subset. The map is fixed at the headline
-# (catchup=0, framing=headline); each tornado axis then re-derives cells at its
-# own catchup/framing but constrained to this method-mix.
+# Per-(disease,country) 
 .composite_cmap <- function(draws, anchor_priority, catchup_focus = 0,
                             framing_focus = if (exists("FRAMING_HEADLINE")) FRAMING_HEADLINE else "campaign_topup") {
   d <- draws %>% dplyr::filter(catchup == catchup_focus, framing == framing_focus)
@@ -80,10 +46,7 @@
     dplyr::select(disease, country, method)
 }
 
-# Core: total over a CELL SET, with optional per-cell rescale. The cell set is
-# either a single anchor method (cmap = NULL, legacy) or a composite method-map
-# (cmap = the .composite_cmap() tibble), inner-joined on (disease,country,method)
-# so the per-cell estimator is held fixed across axes.
+# Core: total over a CELL SET
 .tornado_total <- function(draws, anchor_method = NULL, cmap = NULL,
                            disease_factor = function(x) 1,
                            country_factor = NULL,
@@ -194,8 +157,7 @@ run_structured_sensitivity <- function(yll_draws,
   )
   tab <- dplyr::bind_rows(rows) %>% dplyr::mutate(anchor_method = anchor_label)
   
-  # SELF-TEST: catch-up and discounting must REDUCE the total (monotone, signed);
-  # measles-ON and TB-untreated must INCREASE it; local LE must reduce it.
+  # SELF-TEST: catch-up and discounting must REDUCE the total (monotone, signed)
   .chk <- function(scn, want) {
     r <- tab$pct_change[startsWith(tab$scenario, scn)]
     if (length(r) >= 1 && is.finite(r[1]) &&
@@ -217,9 +179,7 @@ run_structured_sensitivity <- function(yll_draws,
           "; central undiscounted total = ", format(round(central_mean), big.mark = ","),
           ". NOTE: ITS-horizon axis needs a re-run (CVD_ITS_MAX_HORIZON); see merge_rerun().")
   
-  # ---- companion: SC single-method tornado (the old 7-country anchor) for the
-  # appendix, so re-anchoring on the composite loses nothing. Guard against
-  # recursion with also_single = FALSE and a distinct output filename.
+  # ---- companion: SC single-method tornado (the old 7-country anchor)
   if (anchor_mode == "composite" && isTRUE(also_single) &&
       anchor_method %in% unique(yll_draws$method)) {
     comp_table <- sub("\\.csv$", "_SCanchor.csv", out_table)        # always distinct
