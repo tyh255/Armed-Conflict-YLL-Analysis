@@ -1,28 +1,3 @@
-# ============================================================================
-# 05b_FIG4_TRIANGULATION.R
-# ----------------------------------------------------------------------------
-# Nature-style triangulation figure (Fig. 4). Three panels:
-#   (a) estimator specification curve  - 7-country (complete-case) total YLL by
-#       method, sorted, against a design-based consensus band.
-#   (b) per-disease triangulation forest (log-x) - methods grouped into two
-#       inferential families (design/observed-trend vs donor-comparison) with a
-#       per-disease consensus band. Convergence within the band = robust burden.
-#   (c) analytic-axis sensitivity tornado - % change from headline across the
-#       structured-sensitivity axes (S5), with the excluded measles x2.24
-#       multiplier hatched.
-#
-# Triangulation framing follows Lawlor, Tilling & Davey Smith (2016, IJE):
-# estimators with DIFFERENT expected bias directions converging is the evidence.
-#
-# PRIMARY input = draw-level objects (valid CIs): yll_draws (per
-# disease x country x method, with d_undisc draw vectors) and the structured
-# sensitivity table from 09. FALLBACK input = the saved summary CSVs
-# (Table_2_method_comparison.csv, Table_S5_structured_sensitivity.csv): CIs in
-# panel (b) come from the table, panel (a) loses its draw-based CIs.
-#
-# Source AFTER 03b (for aggregate_global_by_method_draws / METHOD_* labels) and
-# 05 (reuses theme_nature() if present). Self-contained otherwise.
-# ============================================================================
 
 stopifnot(requireNamespace("ggplot2", quietly = TRUE))
 suppressPackageStartupMessages({
