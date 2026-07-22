@@ -1,43 +1,3 @@
-# ============================================================================
-# 04_YLL_MONTE_CARLO.R
-# ----------------------------------------------------------------------------
-# Monte Carlo YLL simulation:
-#
-#   deaths_yr = N_yr * Inc_yr * CFR * gap_yr * VE
-#   YLL_undisc_yr = deaths_yr * L_yr
-#   YLL_disc_yr   = YLL_undisc_yr * (1 - exp(-r*L)) / (r*L)
-#
-# Where:
-#   N_yr   = annual birth cohort (deterministic, World Bank-derived)
-#   Inc_yr = lognormal-sampled disease incidence per person
-#   CFR    = beta-sampled case fatality ratio (constant across years per country
-#            for variance honesty; shared between draws)
-#   gap_yr = normal-sampled conflict-attributable coverage gap (proportion),
-#            mean from one of three methods, SD from that method
-#   VE     = beta-sampled vaccine effectiveness (constant across years per country)
-#   L_yr   = remaining life expectancy used to value a death. Resolved by the
-#            life-expectancy layer (01b_life_expectancy.R): GBD 2019 reference
-#            table (TMRLT, ex at age of death; headline/default) or a local-LE
-#            sensitivity (GBD country LE no-shock, or World Bank national LE).
-#   r      = 0.03 discount rate
-#
-# CRITICAL DESIGN: CFR, VE, the measles multiplier and campaign reach are SHARED
-# (common-random-number) draws built once in run_full_yll() and reused across
-# ALL countries (and across all years within a country), because each is a
-# single structural quantity - if CFR is at its high end it is high everywhere
-# at once. Incidence and gap are drawn FRESH each country-year (independent
-# noise, as it should be). Country period totals are the column sums of the
-# year-x-draws matrices. Disease/global totals are formed by summing the
-# per-country period-total DRAW VECTORS within draw index (aggregate_disease_yll
-# / aggregate_method_comparison_draws), which preserves the shared structural
-# correlation - giving honest CIs instead of the previous, too-narrow
-# independent-normal combination.
-#
-# Two catch-up framings, both reported:
-#   coverage_recovery: C_t = C_{t-1} + lambda*(C_pre - C_{t-1}), recursive
-#   cohort_sia:        gap_eff_t = (1 - lambda) * gap_t (linear shrinkage)
-# ============================================================================
-
 # ---- Incidence column lookup ----------------------------------------------
 incidence_col <- function(disease) {
   switch(disease,
@@ -58,12 +18,6 @@ incidence_sigma_col <- function(disease) {
          "Tetanus"      = "Tetanus_Inc_Sigma")
 }
 
-# Moment-matched Beta draw for a bounded [0,1] gap with given mean & sd. Beta is
-# bounded by construction and reproduces the MEAN exactly, removing the upward
-# bias the previous clamped Normal introduced for small positive gaps (its
-# pmax(.,0) floor piled left-tail mass at 0, lifting the realised mean above
-# gap_mean). Variance is capped below mean*(1-mean) to keep alpha,beta > 0; the
-# degenerate mean->{0,1} corners fall back to a clamped Normal.
 draw_gap_beta <- function(n, mean_val, sd_val) {
   m <- min(max(mean_val, 1e-9), 1 - 1e-9)
   max_sd <- sqrt(m * (1 - m)) * 0.999
@@ -80,63 +34,16 @@ draw_gap_beta <- function(n, mean_val, sd_val) {
 # ============================================================================
 # 04_CATCHUP_REVISED.R
 # ----------------------------------------------------------------------------
-# DROP-IN REPLACEMENT for the catch-up layer of 04_yll_monte_carlo.R.
-#
-# Replaces:
-#   - apply_catchup()                  (deleted; superseded by catchup_gap_factors)
-#   - simulate_yll_one()               (revised: new catch-up integration + a
-#                                       gap-clamp bias fix)
-# Adds:
-#   - Catch-up parameters (campaign reach; optional already-immune discount)
-#   - catchup_gap_factors()
-#
-# Keep unchanged from the existing 04: incidence_col(), incidence_sigma_col(),
-# run_full_yll() [except the framing names below], and all aggregation helpers.
-#
-# REQUIRED downstream renames (framing identifiers changed for honesty):
-#   "cohort_sia"        -> "campaign_topup"
-#   "coverage_recovery" -> "routine_recovery"
-# Edit these in 00_run_all.R (make_fig2 framing_focus) and 05_figures_and_tables.R
-# (make_fig2 default, make_fig3 labels, make_table1/make_table2 filters).
-#
-# WHY THIS CHANGED (see accompanying review): the previous catch-up conflated
-# routine-service recovery with retrospective SIA catch-up, let lambda erase
-# 100% of the gap (empirically impossible), and labelled a same-year flow tweak
-# as a cohort/stock mechanism the infant-year accounting cannot represent.
-# Catch-up here is therefore PROSPECTIVE only (current/future cohort-years), and
-# campaign catch-up is bounded by the empirical fraction of zero-dose children
-# that campaigns reach (Portnoy 2018: mean ~0.66, 95% ~0.35-0.90; lower in
-# conflict). Retrospective draw-down of an accumulated susceptible stock needs
-# age-disaggregated incidence + a multi-year risk window (DynaMICE-style) and is
-# out of scope for the current <1-year-incidence inputs.
-# ============================================================================
 
-# ---- Catch-up parameters --------------------------------------------------
-# Campaign reach = fraction of conflict-attributable zero-dose children that a
-# maximal-intensity supplementary campaign effectively reaches. Beta, anchored
-# to Portnoy 2018 (mean 0.66 across 14 LMICs; country range 0.28-0.91). Modelled
-# as a structural draw (one realisation per country, correlated across that
-# country's campaign years). For full common-random-number consistency this row
-# belongs in the 01 params table + draw_shared_params() registry; defined here
-# so this file is a self-contained catch-up patch.
 CATCHUP_REACH <- list(mean = 0.66, lo = 0.35, hi = 0.90, dist = "beta",
                       source = "Portnoy 2018")
 
-# Optional: fraction of campaign-reached measles "zero-dose" survivors already
-# immune by natural infection (Zambia SIA serosurvey ~0.36). Default 0 (off);
-# set >0 as a sensitivity to further discount measles catch-up benefit.
+
 CATCHUP_IMMUNE_DISCOUNT_MEASLES <- 0.0
 
-# Which framings to report. Both are PROSPECTIVE; they are distinct programmatic
-# levers (rebuild routine vs. run campaigns), not two views of one mechanism.
+
 CATCHUP_FRAMINGS <- c("routine_recovery", "campaign_topup")
 
-# ---- Catch-up factor builder ----------------------------------------------
-# Returns a length-n_years list. Element yi is the multiplicative factor (in
-# [0,1]) applied to year yi's RAW conflict-attributable gap draws to obtain the
-# catch-up-adjusted effective gap. factor == 1 -> no catch-up.
-#   routine_recovery -> scalar per year (deterministic recovery trajectory)
-#   campaign_topup   -> length-n_sim vector per year (carries reach uncertainty)
 catchup_gap_factors <- function(framing, lambda, gap_mean_vec,
                                 coverage_obs_vec, coverage_cf_vec,
                                 reach_draws, immune_discount = 0) {
@@ -144,18 +51,13 @@ catchup_gap_factors <- function(framing, lambda, gap_mean_vec,
   if (lambda == 0 || n == 0) return(rep(list(1), n))
   
   if (framing == "campaign_topup") {
-    # Close lambda * reach * (1 - already_immune) of each cohort-year's gap,
-    # bounded above by reach (a campaign cannot reach more than the zero-dose
-    # children it reaches). Prospective; same reach realisation across years.
+    
     close <- pmin(pmax(lambda * reach_draws * (1 - immune_discount), 0), 1)
     return(rep(list(pmax(1 - close, 0)), n))
   }
   
   if (framing == "routine_recovery") {
-    # Routine system rebuild: coverage for subsequent birth cohorts converges
-    # geometrically toward the counterfactual at rate lambda. Not reach-limited
-    # (a fully rebuilt routine system can reach the counterfactual); year 1 is
-    # locked at observed, so recovery accrues only to later cohort-years.
+    
     if (anyNA(c(coverage_obs_vec[1], coverage_cf_vec[1]))) return(rep(list(1), n))
     cov_path <- numeric(n); cov_path[1] <- coverage_obs_vec[1]
     C_pre <- coverage_cf_vec[1]
@@ -174,14 +76,7 @@ catchup_gap_factors <- function(framing, lambda, gap_mean_vec,
 }
 
 # ---- Core MC simulator: single country x vaccine x disease x method -------
-# Identical to the prior simulate_yll_one EXCEPT:
-#   (1) catch-up applied via catchup_gap_factors() multiplicatively on raw gap
-#       draws (replaces apply_catchup + the ad hoc sd*(1-lambda) shrink);
-#   (2) gap mean clamped at 0 and the year skipped (contributes 0) when the
-#       central gap is <= 0, removing the clamp-induced positive bias;
-#   (3) framing identifiers updated (CATCHUP_FRAMINGS).
-# CFR/VE are still drawn here per country; the shared-draws (CRN) change is
-# orthogonal and composes on top of this without conflict.
+
 simulate_yll_one <- function(country_iso, country_name, vaccine, disease,
                              method_name, gap_data, covariates, shared,
                              n_sim = N_SIM, catchup_grid = CATCHUP_RATES) {
@@ -203,9 +98,6 @@ simulate_yll_one <- function(country_iso, country_name, vaccine, disease,
   sig_col <- incidence_sigma_col(disease)
   has_sig_col <- sig_col %in% names(g)
   
-  # Population denominator N per disease/age-band (recommendation #7): birth
-  # cohort (<1) by default, under-5 population for the TB/diphtheria under-5
-  # sensitivity. Must align with the incidence band and the age-at-death for L.
   denom_col <- disease_denominator_col(disease)
   if (!denom_col %in% names(g)) {
     message("    skipping: denominator '", denom_col, "' absent for ",
@@ -213,30 +105,18 @@ simulate_yll_one <- function(country_iso, country_name, vaccine, disease,
     return(NULL)
   }
   
-  # Country-level structural parameters from the SHARED (common-random-number)
-  # draws (recommendation #3): the SAME draw vector is reused across all
-  # countries, so CFR/VE/multiplier/reach uncertainty stays perfectly correlated
-  # across countries and cross-country aggregation no longer averages it away.
   cfr_pop  <- cfr_population_for_disease(disease)
   cfr_draws_country <- get_shared_draws(shared, cfr_param_for_disease(disease), cfr_pop)
   ve_draws_country  <- get_shared_draws(shared, ve_param_for_link(vaccine, disease, country_name))
   
   cfr_effective_country <- cfr_draws_country
-  # Measles conflict CFR multiplier: OFF by default (red-team remediation) -- it
-  # was inflating the measles arm ~2.4x as a hidden point estimate (~40% of the
-  # global total). Applied only when MEASLES_MULT_MODE == 'on', as a labelled
-  # scenario rather than the headline.
+  
   if (disease == "Measles" &&
       identical(get0("MEASLES_MULT_MODE", ifnotfound = "off"), "on")) {
     mult_draws <- get_shared_draws(shared, "Measles_conflict_mult")
     cfr_effective_country <- pmin(cfr_draws_country * mult_draws, 1)
   }
-  # TB treatment-access weighting (red-team remediation): the tabled CFR_TB is
-  # the UNTREATED paediatric CFR, so applying it to every case assumes zero
-  # treatment access. Blend with the treated CFR by treatment coverage; both are
-  # shared structural draws. TB_TX_WEIGHTING='off' recovers the untreated-CFR
-  # upper bound. Effective CFR is constant across years per country, like the
-  # other structural parameters.
+ 
   if (disease == "Tuberculosis" &&
       isTRUE(get0("TB_TX_WEIGHTING", ifnotfound = FALSE))) {
     cfr_tb_treated <- get_shared_draws(shared, "CFR_TB", "Ages 0-4, treated")
@@ -245,7 +125,6 @@ simulate_yll_one <- function(country_iso, country_name, vaccine, disease,
       (1 - p_tb_treat) * cfr_draws_country
   }
   
-  # Campaign reach: shared across countries' campaigns (was fresh per country).
   reach_draws <- get_shared_draws(shared, "Catchup_reach")
   imm_discount <- if (disease == "Measles") CATCHUP_IMMUNE_DISCOUNT_MEASLES else 0
   
@@ -305,10 +184,7 @@ simulate_yll_one <- function(country_iso, country_name, vaccine, disease,
           sdlog   = inc_sigma
         )
         
-        # RAW conflict-attributable gap draws (no catch-up). Drawn from a Beta
-        # moment-matched to (gap_mean, gap_sd): support is naturally [0,1] and
-        # the draw MEAN equals gap_mean, removing the upward bias the previous
-        # clamped Normal (pmax(.,0)) introduced for small positive gaps.
+        
         gap_sd_yr <- max(gap_sd_yi, 1e-6)
         gap_raw   <- draw_gap_beta(n_sim, gap_mean, gap_sd_yr)
         
@@ -391,10 +267,6 @@ simulate_yll_one <- function(country_iso, country_name, vaccine, disease,
         n_valid_years = sum(valid_year), n_years = n_years
       )
       
-      # Carry the period-total DRAW VECTORS up for draw-level aggregation
-      # (recommendation #4). With CRN, summing these across countries within a
-      # draw index preserves the shared structural correlation, so disease/global
-      # CIs are honest rather than artificially narrow.
       draw_rows[[length(draw_rows) + 1]] <- tibble::tibble(
         country = country_name, ISO3 = country_iso, vaccine = vaccine,
         disease = disease, method = method_name,
@@ -415,16 +287,10 @@ run_full_yll <- function(gap_data, covariates, conflict_df = conflict_info,
                          n_sim = N_SIM, seed = 42,
                          methods = NULL) {
   set.seed(seed)
-  # Methods to simulate. Default = every method present in gap_data, so any
-  # estimator added in 03b (SC + covariates, Augmented SC, DiD) flows through
-  # without editing this loop. Pass `methods` to restrict (e.g. to keep the
-  # heavy MC to a headline subset).
+  
   if (is.null(methods)) methods <- unique(gap_data$method)
   message("YLL methods: ", paste(methods, collapse = ", "))
-  # Build the SHARED (common-random-number) structural draws ONCE (recommendation
-  # #3). draw_shared_params() isolates/restores the RNG (its own SHARED_DRAW_SEED),
-  # so the year-specific noise stream seeded above stays reproducible and
-  # independent.
+  
   shared <- draw_shared_params(n_sim, conflict_df = conflict_df,
                                vd = vaccine_disease)
   
@@ -485,14 +351,7 @@ yearly_yll <- function(yll_df) {
   yll_df %>% dplyr::filter(!is.na(year))
 }
 
-# Sum across countries within a disease-method-scenario at the DRAW level
-# (recommendation #4). Takes the `draws` element of run_full_yll() output. For
-# each group, the per-country period-total draw vectors are summed element-wise
-# (same draw index k across countries), then the mean and 2.5/97.5 quantiles are
-# taken. With CRN (recommendation #3) this preserves the shared structural
-# correlation (CFR/VE/multiplier/reach) while keeping incidence/gap noise
-# independent across countries - the previous symmetric-normal, fully-
-# independent combination understated the disease and global CIs.
+
 aggregate_disease_yll <- function(yll_draws) {
   if (is.null(yll_draws) || nrow(yll_draws) == 0) return(tibble::tibble())
   keep <- vapply(yll_draws$d_undisc,
@@ -518,10 +377,6 @@ aggregate_disease_yll <- function(yll_draws) {
     dplyr::ungroup()
 }
 
-# Draw-level COMPLETE-CASE method comparison for Table 2 (recommendation #4).
-# Restricts each disease to the country set present under ALL methods, then sums
-# the per-country draw vectors within method at the draw level. Returns one row
-# per (disease, method) with draw-based mean/lo/hi and n_countries.
 aggregate_method_comparison_draws <- function(yll_draws, catchup_focus = 0,
                                               framing_focus = "campaign_topup") {
   if (is.null(yll_draws) || nrow(yll_draws) == 0) return(tibble::tibble())
