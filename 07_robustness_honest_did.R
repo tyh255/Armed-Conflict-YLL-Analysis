@@ -1,50 +1,3 @@
-# ============================================================================
-# 07_ROBUSTNESS_HONEST_DID.R   (supplementary; PRIMARY spec unchanged)
-# ----------------------------------------------------------------------------
-# Formal parallel-trends sensitivity for the Callaway & Sant'Anna (2021) DiD,
-# using Rambachan & Roth (2023, RevEcon Studies) "honest" bounds. This does NOT
-# change any headline estimate; it answers the question a Nature referee will
-# ask of the DiD arm: "your pre-onset coefficients look ~flat, but eyeballing a
-# pre-trend is underpowered and conditioning on it induces pre-test bias -- how
-# large a violation of parallel trends would it take to overturn the conflict
-# effect?" The answer is the BREAKDOWN VALUE (the smallest restriction parameter
-# at which the robust CI first includes 0).
-#
-# Two restriction families are reported (Rambachan & Roth 2023):
-#   * relative_magnitude (Mbar): post-onset PT violation is at most Mbar x the
-#     MAX pre-onset violation. Mbar=1 means "the post-period deviation from
-#     parallel trends is no larger than the worst pre-period deviation."
-#   * smoothness (M): bounds the curvature (second difference) of the event-study
-#     path; M=0 is exact linear extrapolation of the pre-trend. UNITS ARE THE
-#     OUTCOME'S: coverage is in percentage points, so M is in pp of second
-#     difference per period. The default grid is therefore on a pp scale
-#     (0,0.5,1,1.5,2), NOT the 0.01-0.05 used previously (which is ~100x too
-#     tight for pp coverage and made every robust CI collapse onto exact PT).
-#     Sanity-check the top of the grid against the observed pre-trend curvature.
-#
-# This matters most because the whole comparison-group COVID argument is the
-# parallel-trends assumption applied to the 2020-21 shock, and the onset
-# sensitivity (06) shows pre-onset coverage degradation in several countries --
-# both make the PT assumption worth bounding rather than asserting.
-#
-# IMPLEMENTATION NOTE: the bridge from a {did} dynamic aggregation (AGGTEobj) to
-# {HonestDiD} is Pedro H. C. Sant'Anna's honest_did.AGGTEobj (github.com/
-# pedrohcgs/CS_RR), not yet merged into either package, so it is vendored below
-# verbatim-in-spirit with attribution. It REQUIRES base_period="universal" in
-# att_gt (the pipeline already uses that, 03b) and the full att_gt object, which
-# 03b attaches as attr(gap_df, "cs_attgt"). Roth's guidance: restrict the event
-# study to e in [-5,5] because distant pre-period coefficients are noisy. That
-# restriction is now applied INSIDE the bridge (on vectors already aligned to a
-# single full aggregation) rather than via aggte(min_e/max_e), so the influence
-# function and point estimates can never get trimmed out of step across {did}
-# versions, and non-estimable (NA) event-times are dropped contiguously instead
-# of poisoning the vcov.
-#
-# Source AFTER 03b (needs the cs_attgt attribute) and 05 (save_fig/save_tab,
-# nm_palette/theme). Optional packages: did, HonestDiD, ggplot2. Self-skips if
-# any is absent.
-# ============================================================================
-
 # ---- vendored bridge: honest_did for {did} AGGTEobj (Sant'Anna, CS_RR) ------
 honest_did <- function(...) UseMethod("honest_did")
 
@@ -76,13 +29,6 @@ honest_did.AGGTEobj <- function(es, e = 0,
          ncol(V), "); influence function and point estimates are misaligned.")
   
   # ---- assemble the event-study window, dimension-safe -------------------
-  # HonestDiD's convention: betahat = (pre-coefs ascending, post-coefs ascending)
-  # with the universal-base reference (e = -1, att == 0, zero-variance row/col)
-  # OMITTED; pre block is e <= -2, post block is e >= 0. Retaining e = -1 makes
-  # sigma singular. We grow OUTWARD from the reference on each side, keeping only
-  # estimable, contiguous integer event-times within [min_e, max_e]; this honours
-  # Roth's [-5,5] guidance and silently survives any non-estimable interior cell
-  # (which would otherwise feed NA into HonestDiD).
   estimable <- is.finite(beta) & is.finite(diag(V))
   est_at <- function(et) {
     idx <- match(et, egt)
@@ -107,11 +53,6 @@ honest_did.AGGTEobj <- function(es, e = 0,
   npost   <- length(post_e)
   
   # ---- target l_vec: single horizon e, OR an average over an event-time window
-  # avg_window = c(lo, hi). The averaged target is the estimand the BURDEN uses
-  # (the gap accumulates over event-time; the on-impact coefficient understates
-  # it for the lagged MCV1/DTP3 arms). l_vec puts equal weight on the estimable
-  # post-periods inside the window (clipped to the estimable post block), which is
-  # exactly HonestDiD's mechanism for a weighted post-period effect.
   if (!is.null(avg_window)) {
     lv <- .hd_avg_lvec(post_e, avg_window)        # equal-weight over window
     baseVec1 <- lv$l_vec
@@ -145,9 +86,7 @@ honest_did.AGGTEobj <- function(es, e = 0,
        npre = npre, npost = npost, egt = sel_e, target_e = target_e)
 }
 
-# Equal-weight averaging l_vec over the estimable post-periods inside an event-
-# time window. `post_e` is the ascending vector of estimable post event-times
-# (length npost); the window is clipped to it. Pure base R (unit-tested).
+
 .hd_avg_lvec <- function(post_e, window) {
   if (length(window) != 2L || any(!is.finite(window)))
     stop(".hd_avg_lvec: window must be c(lo, hi) finite.")
@@ -162,13 +101,6 @@ honest_did.AGGTEobj <- function(es, e = 0,
 }
 
 # ---- breakdown value -------------------------------------------------------
-# Smallest restriction parameter (Mbar or M) at which the robust CI first
-# includes 0 (i.e. the conflict effect is no longer distinguishable from 0).
-# Returns Inf if every tested restriction still excludes 0 (very robust),
-# the smallest grid value if even the tightest robust CI already includes 0
-# (not identified at any tested restriction). ALWAYS returns a numeric scalar:
-# returning c(value=<num>, par=<chr>) silently coerced the value to character,
-# which then broke sprintf("%.2f", .) downstream and aborted the table write.
 .breakdown_value <- function(robust_ci) {
   rc <- robust_ci
   par_col <- if ("Mbar" %in% names(rc)) "Mbar" else "M"
@@ -190,9 +122,6 @@ honest_did.AGGTEobj <- function(es, e = 0,
 }
 
 # ---- per-(vaccine,target) runner -------------------------------------------
-# Runs both restriction families for ONE target (a single horizon e, or an
-# event-time average window) and returns tagged robust-CI rows. Factored out so
-# the on-impact and post-period-average horizons share identical error handling.
 .hd_run_target <- function(dyn, vacc, target, min_e, max_e, Mbar_grid, M_grid) {
   hz <- target$label
   errs <- character(0)
@@ -242,18 +171,6 @@ honest_did.AGGTEobj <- function(es, e = 0,
 }
 
 # ---- driver ----------------------------------------------------------------
-# Consumes attr(gap_df, "cs_attgt") (named list of att_gt objects by vaccine).
-# For each vaccine: aggregate the FULL dynamic event study, then for EACH target
-# horizon run both restriction families over a grid (trimming to [min_e,max_e]
-# inside the bridge) and record the original CI + breakdown.
-#
-# TWO horizons by default (a review fix): the on-impact coefficient (e=0) AND the
-# post-period AVERAGE over `avg_window` (default e in [0,4]). The averaged target
-# is the headline robustness read, because the YLL burden is driven by the gap
-# ACCUMULATED over event time (S2d), not the on-impact year -- bounding PT
-# violations only at e=0 understates robustness for the lagged MCV1/DTP3 arms,
-# whose on-impact CI already straddles 0. Set avg_window = NULL to recover the
-# e=0-only behaviour. Tables gain a `horizon` column.
 run_honest_did <- function(gap_df,
                            e = 0, min_e = -5L, max_e = 5L,
                            avg_window = c(0L, 4L),
@@ -316,9 +233,7 @@ run_honest_did <- function(gap_df,
   sm_tab <- dplyr::bind_rows(rows_sm)
   es_all <- dplyr::bind_rows(es_tab)
   
-  # WRITE TABLES FIRST. The deliverables are persisted before any (non-essential)
-  # console diagnostics, so a formatting slip in a diagnostic can never again
-  # abort the save. Both writes go through the save_tab/write.csv fallback.
+  # WRITE TABLES FIRST
   if (nrow(rm_tab) > 0) .hd_save_tab(rm_tab, "Table_S3_honestdid_relative_magnitude.csv", out_dir)
   if (nrow(sm_tab) > 0) .hd_save_tab(sm_tab, "Table_S3b_honestdid_smoothness.csv",        out_dir)
   
@@ -331,9 +246,7 @@ run_honest_did <- function(gap_df,
     else for (m in errs) message("    - ", m)
   }
   
-  # SELF-TEST / DIAGNOSTICS (wrapped: must never block the outputs above) ----
-  # (1) robust CIs should (weakly) widen as the restriction relaxes;
-  # (2) breakdown is a finite grid value or Inf.
+  # SELF-TEST / DIAGNOSTICS
   tryCatch({
     if (nrow(rm_tab) > 0) {
       chk <- rm_tab %>% dplyr::group_by(vaccine, horizon) %>%
