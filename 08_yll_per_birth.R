@@ -1,25 +1,3 @@
-# ============================================================================
-# 08_YLL_PER_BIRTH.R   (supplementary; PRIMARY spec unchanged)
-# ----------------------------------------------------------------------------
-# Population-normalised burden. The absolute YLL total is dominated by Nigeria
-# (~70-85% of the complete-case total) simply because Nigeria has by far the
-# largest birth cohort -- that answers "where are the most life-years lost" but
-# NOT "where is conflict most damaging to vaccination". This module reports YLL
-# per 1,000 births over each country's conflict window, which is the INTENSITY of
-# the conflict-attributable loss and is the figure that surfaces high-severity /
-# smaller-population settings (e.g. Somalia, Syria, Yemen) that the absolute
-# total hides. Both views belong in the paper (cf. the team's 2025 systematic
-# review: effects concentrate in moderate-to-high-intensity civil wars, a per-
-# capita phenomenon).
-#
-# Denominator: total births over conflict_start:conflict_end, summed from
-# covariates_panel$Birth_Cohort (= Birth_Rate * Population_per_1000). Numerator:
-# country YLL summed over diseases, per method, headline scenario.
-#
-# Source AFTER 04/05 (uses yll_country, covariates_panel, conflict_info,
-# save_fig/save_tab, nm_palette/theme, FRAMING_HEADLINE).
-# ============================================================================
-
 # Total births over each country's conflict window (the per-birth denominator).
 conflict_window_births <- function(covariates = covariates_panel,
                                    conflict_df = conflict_info) {
@@ -61,9 +39,6 @@ yll_per_birth <- function(yll_country, covariates = covariates_panel,
       discount = discount)
 }
 
-# Figure: per-birth YLL ranked by the median across methods (Cleveland dot plot,
-# one dot per method), so intensity ordering is visible independent of which
-# estimator is used.
 make_fig_per_birth <- function(pb_df) {
   if (is.null(pb_df) || nrow(pb_df) == 0)
     stop("make_fig_per_birth: empty per-birth table.")
