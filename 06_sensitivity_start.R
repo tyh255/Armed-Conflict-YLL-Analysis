@@ -1,42 +1,3 @@
-# ============================================================================
-# 06_SENSITIVITY_START.R
-# ----------------------------------------------------------------------------
-# Robustness of conflict-attributable YLL to the coded conflict-ONSET year.
-#
-# The onset year is a researcher degree of freedom: shifting it moves the
-# pre/post boundary, which re-anchors the counterfactual for EVERY estimator at
-# once -- the ITS trend origin, the SC i_time and optimization window, the CS
-# treatment cohort, and the baseline pre-window. This module re-runs the full
-# gap -> YLL chain with conflict_start shifted by each value in `shifts`
-# (default -1, 0, +1) and reports how the bottom line moves.
-#
-# WHY THE DIFFERENCES ARE CLEAN (not noise):
-#   run_full_yll() builds the structural CFR/VE draws from a fixed shared seed
-#   keyed by COUNTRY (not by timing), and we pass the SAME `seed` for every
-#   shift. The common random numbers are therefore identical across shifts, so
-#   a difference in the YLL total is attributable to the onset move, not to
-#   Monte Carlo variation. (n_sim can be smaller here than the headline run:
-#   we want a stable point estimate of the SHIFT, not a tight CI.)
-#
-# COST: this re-runs gap estimation (incl. SC permutation inference and DiD) and
-# the YLL Monte Carlo once PER SHIFT. It is opt-in -- source this file (it only
-# defines functions) and call run_start_sensitivity() deliberately, or set
-# RUN_START_SENSITIVITY <- TRUE in 00_run_all.R.
-#
-# Source AFTER 05_figures_and_tables.R (uses theme_nm / nm_palette / METHOD_ORDER
-# and the gap + YLL + aggregation functions).
-# ============================================================================
-
-# ---------------------------------------------------------------------------
-# Shift the onset year and re-derive the dependent pre-window columns.
-# ---------------------------------------------------------------------------
-# By default ONLY the onset moves (the pre/post boundary); conflict_end is held
-# fixed, because the onset -- not the end -- is the arbitrary coding choice in
-# question. This means start-1 adds one conflict-year at the front and start+1
-# removes the first year, which is the real consequence of mis-dating onset.
-# Set shift_end = TRUE for the window-PRESERVING variant (start and end move
-# together, holding the post-window length constant), which isolates the
-# counterfactual-alignment effect from the accumulation-length effect.
 shift_conflict_info <- function(conflict_df, delta, shift_end = FALSE,
                                 baseline_window = 3L) {
   out <- conflict_df
@@ -56,16 +17,7 @@ shift_conflict_info <- function(conflict_df, delta, shift_end = FALSE,
   out
 }
 
-# ---------------------------------------------------------------------------
-# Run the gap -> YLL chain across onset shifts and collect comparable summaries.
-# ---------------------------------------------------------------------------
-# Returns:
-#   $by_method  - global all-disease YLL total per (method, start_shift),
-#                 complete-case within shift (same logic as Figure 4 panel C),
-#                 plus a per-method % change relative to shift 0.
-#   $by_country - per-country YLL total (summed over disease) per
-#                 (country, method, start_shift) for localising the sensitivity.
-#   $meta       - the call settings.
+
 run_start_sensitivity <- function(coverage_df, covariates,
                                   conflict_df   = conflict_info,
                                   shifts        = c(-2L, -1L, 0L, 1L, 2L),
@@ -86,11 +38,7 @@ run_start_sensitivity <- function(coverage_df, covariates,
     yll_d   <- run_full_yll(gaps_d, covariates, conflict_df = cinfo_d,
                             n_sim = n_sim, seed = seed, methods = NULL)
     
-    # Retain per-shift draws (headline scenario only) for the COMPOSITION-STABLE
-    # fixed-cell aggregation after the loop (.fixed_cell_onset). Without this the
-    # per-shift complete-case cell set can change across shifts (a later onset can
-    # make a donor-poor country's SC estimable), contaminating the %-change with
-    # composition rather than the onset effect (the cells_match_ref=FALSE rows).
+    
     dd <- yll_d$draws %>%
       dplyr::filter(framing == framing_focus, catchup == catchup_focus)
     keep_d <- vapply(dd$d_undisc, function(x) !is.null(x) && length(x) > 0, logical(1))
@@ -119,10 +67,6 @@ run_start_sensitivity <- function(coverage_df, covariates,
   by_method  <- dplyr::bind_rows(by_method)
   by_country <- dplyr::bind_rows(by_country)
   
-  # Per-method % change vs the reference (shift 0). Flag composition changes:
-  # complete-case cell counts can differ across shifts (a shift may cost SC a
-  # donor-poor country), so a moving n_cells means the totals are not on an
-  # identical cell set -- read the % change with that in mind.
   if (nrow(by_method) > 0) {
     ref <- by_method %>%
       dplyr::filter(start_shift == 0L) %>%
@@ -144,17 +88,8 @@ run_start_sensitivity <- function(coverage_df, covariates,
                    framing = framing_focus, catchup = catchup_focus))
 }
 
-# ---------------------------------------------------------------------------
-# Composition-STABLE onset sensitivity (the primary supplementary table).
-# ---------------------------------------------------------------------------
-# For EACH method, restrict to the (disease, country) cells the method produced
-# at EVERY shift it is present in, then sum the per-cell draw vectors within
-# (method, shift) and compute the %-change vs shift 0 on that FIXED cell set.
-# This isolates the onset effect from changes in the estimable cell set across
-# shifts. Methods absent at some shifts (e.g. DiD at -2, where the pooled CS
-# design hits the pre-window data boundary) are evaluated over the shifts where
-# they ARE present; n_shifts_used records this. n_cells is constant within a
-# method by construction, so cells_match_ref is always TRUE here.
+
+                     
 .fixed_cell_onset <- function(draws_by_shift, shifts) {
   if (length(draws_by_shift) == 0) return(tibble::tibble())
   all_d <- dplyr::bind_rows(lapply(names(draws_by_shift), function(k) {
@@ -198,15 +133,8 @@ run_start_sensitivity <- function(coverage_df, covariates,
   dplyr::bind_rows(out)
 }
 
-# ---------------------------------------------------------------------------
-# Model-agnostic event-time coverage-gap profile (supplementary descriptive).
-# ---------------------------------------------------------------------------
-# Aligns each country's estimated coverage gap (gap_df; PRIMARY manual-onset
-# specification) on event time tau = year - conflict_start, then averages the gap
-# by (method, event_time) across countries. Shows the DYNAMIC post-onset coverage
-# disruption the YLL rests on. gap_df contains only conflict-window years, so this
-# is tau >= 0; the pre-onset trajectory (pre-trend test / pre-onset degradation)
-# comes from the CS / HonestDiD event study in 07 and from the onset-shift table.
+
+                     
 event_time_gap_profile <- function(gap_df, conflict_df = conflict_info,
                                    target_vaccine = NULL) {
   d <- gap_df
