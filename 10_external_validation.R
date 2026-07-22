@@ -1,33 +1,4 @@
-# ============================================================================
-# 10_EXTERNAL_VALIDATION.R   (supplementary; PRIMARY spec unchanged)
-# ----------------------------------------------------------------------------
-# Sanity-checks the two arms that now dominate the total -- measles (~48%) and
-# pertussis (~45%) -- against an external mortality envelope. The model produces
-# conflict-ATTRIBUTABLE deaths (the excess from the coverage gap), which must be
-# a plausible fraction of TOTAL disease deaths in the same countries and years.
-# A reviewer will ask why pertussis nearly equals measles; this table pre-empts
-# it by showing implied attributable deaths against an independent benchmark and
-# flagging any disease whose attributable share is implausible (>100% of total,
-# or vanishingly small).
-#
-# BENCHMARKS:
-#   (A) PREFERRED -- GBD YLL benchmark (no extra file). Reuses the same IHME
-#       files 02 reads for incidence (which also carry a "YLLs (Years of Life
-#       Lost)" measure) to compare the model's UNDISCOUNTED attributable YLL to
-#       GBD TOTAL YLL, band-for-band. See the GBD YLL BENCHMARK section below.
-#   (B) Optional deaths benchmark (user-supplied; not bundled to avoid a stale
-#       hard-code): <OUT_DIR>/external_deaths_benchmark.csv with columns
-#       country, disease, year, deaths.
-# If neither benchmark resolves, the module still reports implied attributable
-# deaths and cases, and prints exactly what to supply. Do NOT invent benchmark
-# numbers -- they come from GBD/WHO.
-#
-# Source AFTER 04/05 (uses yll_country, conflict_info, params, save_fig/save_tab).
-# ============================================================================
 
-# Central CFR per disease (headline), for implied-cases back-calculation. Pulled
-# from the 01 params table where possible; TB uses the treatment-weighted
-# effective CFR (matches 04 when TB_TX_WEIGHTING is on).
 .central_cfr <- function() {
   get1 <- function(param, pop) {
     if (!exists("params")) return(NA_real_)
@@ -47,10 +18,6 @@
     Tetanus      = get1("CFR_Tetanus", "Post-neonatal/childhood (ltd care)"))
 }
 
-# Implied conflict-attributable deaths (and cases) by disease x method, headline
-# scenario, summed over countries. Means are additive across countries; CIs would
-# need the deaths draw vectors (the pipeline carries YLL draws, not deaths
-# draws), so this is a point comparison.
 implied_attributable_deaths <- function(yll_country,
                                         framing_focus = if (exists("FRAMING_HEADLINE")) FRAMING_HEADLINE else "campaign_topup",
                                         catchup_focus = 0) {
@@ -67,9 +34,7 @@ implied_attributable_deaths <- function(yll_country,
                              attributable_deaths / cfr_central, NA_real_))
 }
 
-# Benchmark fold-in: total external deaths per disease over the conflict windows,
-# and the attributable share. Only the complete countries in yll_country are
-# counted in the benchmark sum, so the ratio is on a like-for-like country set.
+
 validate_against_benchmark <- function(implied_tab, yll_country,
                                        conflict_df = conflict_info,
                                        out_dir = if (exists("OUT_DIR")) OUT_DIR else ".") {
@@ -109,22 +74,6 @@ validate_against_benchmark <- function(implied_tab, yll_country,
 # ============================================================================
 # GBD YLL BENCHMARK (preferred over the deaths benchmark)
 # ----------------------------------------------------------------------------
-# Benchmarks the model's conflict-ATTRIBUTABLE YLL directly against GBD TOTAL
-# YLL, rather than going via deaths. This reuses the SAME IHME files 02 already
-# reads for incidence (IHME_<Disease>_GBD.csv), the SAME harmonise_country(), and
-# the SAME per-disease age band (disease_age_band()), so the comparison is
-# band-for-band. It filters the YLL measure instead of incidence; no separate
-# benchmark CSV is needed.
-#
-# Comparability: GBD 2019+ reports YLLs UNDISCOUNTED on its reference life table
-# (ex at age 0 ~= 88.9, the same TMRLT this pipeline uses), so the model's
-# UNDISCOUNTED YLL is directly comparable to GBD YLL "Number". The ratio
-# (attributable / GBD total) should be well below 100%; >100% indicates either
-# genuine over-attribution OR a model CFR above GBD's implied CFR (deaths/cases)
-# -- both worth inspecting. Minor caveat: for "Under 5" bands the model applies
-# ex at age 0 to all deaths while GBD uses age-at-death, so the model slightly
-# overstates YLL/death for 1-4y, inflating the ratio by a few percent.
-# ============================================================================
 
 .GBD_YLL_FILES <- c(
   Tuberculosis = "IHME_Tuberculosis_GBD.csv", Measles   = "IHME_Measles_GBD.csv",
@@ -175,15 +124,7 @@ load_gbd_yll_benchmark <- function(diseases = names(.GBD_YLL_FILES),
   dplyr::bind_rows(lapply(diseases, read_gbd_yll, ihme_dir = ihme_dir, alt_files = alt_files))
 }
 
-# Optional per-(country,disease) GBD-denominator OVERRIDE. In collapsed-
-# surveillance settings (e.g. Syria/Yemen post-onset) GBD's cause-specific YLL
-# can be implausibly small because incidence is under-ascertained, which inflates
-# the attributable-share ratio without any error in the MODEL numerator. Supplying
-# a corrected window denominator from an independent source (WHO measles/pertussis
-# case data x band CFR x ex0, or a published reconstruction) is the honest fix:
-# the code uses the override where given and falls back to GBD elsewhere. We never
-# hard-code a denominator here -- the analyst supplies the CSV; absent it, nothing
-# changes. Columns: country, disease, gbd_yll_window (the corrected window total).
+
 .apply_gbd_override <- function(gbd_win, gbd_override) {
   if (is.null(gbd_override) || nrow(gbd_override) == 0) return(gbd_win)
   need <- c("country", "disease", "gbd_yll_window")
@@ -204,12 +145,7 @@ load_gbd_yll_benchmark <- function(diseases = names(.GBD_YLL_FILES),
   out
 }
 
-# Compare model attributable UNDISCOUNTED YLL to GBD total YLL over each
-# country's conflict window, on a like-for-like country set per estimator.
-# `over_pct` is the threshold (% of GBD YLL) above which a (country,disease,method)
-# cell is flagged as exceeding the GBD envelope; `high_pct` is an intermediate
-# "high share" band. These now live on by_country too, so the Syria/Yemen pertussis
-# blow-up surfaces IN the table (S6c) instead of being diluted in the disease pool.
+
 validate_yll_against_gbd <- function(yll_country, gbd_yll, conflict_df = conflict_info,
                                      framing_focus = if (exists("FRAMING_HEADLINE")) FRAMING_HEADLINE else "campaign_topup",
                                      catchup_focus = 0,
@@ -255,9 +191,7 @@ validate_yll_against_gbd <- function(yll_country, gbd_yll, conflict_df = conflic
     dplyr::mutate(attributable_pct_of_gbd = 100 * model_yll / gbd_yll_window,
                   flag = .cell_flag(attributable_pct_of_gbd)) %>%
     dplyr::arrange(disease, method, dplyr::desc(attributable_pct_of_gbd))
-  # (country,disease) over-attribution SUMMARY across methods: the manuscript-
-  # facing diagnostic. A pair is flagged if the MEDIAN share across estimators
-  # exceeds over_pct -- i.e. the over-attribution is systemic, not one estimator.
+  
   over_attr <- joined %>%
     dplyr::mutate(pct = 100 * model_yll / gbd_yll_window) %>%
     dplyr::group_by(country, disease) %>%
