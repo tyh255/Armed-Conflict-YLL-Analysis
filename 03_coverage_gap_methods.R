@@ -1,63 +1,3 @@
-# ============================================================================
-# 03_COVERAGE_GAP_METHODS.R   (revised)
-# ----------------------------------------------------------------------------
-# Three methods for estimating conflict-attributable coverage gaps:
-#
-#   (1) gap_baseline   - observed vs. 3-year pre-conflict mean
-#   (2) gap_synthetic  - tidysynth SC, full-window-complete donor pool,
-#                        RMSPE-filtered placebo SD, optional lag predictors
-#   (3) gap_its        - ITS with logit link, Jensen-corrected back-transform,
-#                        parametric bootstrap that includes RESIDUAL variance,
-#                        capped counterfactual with cap-binding diagnostic
-#
-# Each returns a long-format tibble with at least:
-#   country, ISO3, vaccine, year, coverage_obs, coverage_cf, gap, gap_sd, method
-# (SC/ITS also carry method-specific diagnostic columns.)
-#
-# Units: coverage and gap in percentage points (0-100), gap_sd in pp.
-# estimate_all_gaps() runs all three, stacks, and adds proportion versions.
-#
-# ---------------------------------------------------------------------------
-# SIGN CONVENTION (consistent across all methods):
-#     gap = counterfactual - observed   ==>  positive gap = coverage shortfall
-#
-# KEY ASSUMPTIONS (read before trusting any number):
-#   * Coverage point estimates are treated as known (WUENIC's own uncertainty
-#     is NOT propagated).
-#   * The three methods estimate DIFFERENT counterfactuals (flat / donor-
-#     weighted / trend-extrapolated). They are a triangulation, not three
-#     independent estimates of one quantity; their gap_sd are not on the same
-#     inferential footing.
-#   * No conflict spillover onto donor / comparator countries (SUTVA).
-#   * Baseline anchors on preconflict_year; SC and ITS anchor on
-#     conflict_start. estimate_all_gaps() warns if these disagree.
-#   * Method-specific assumptions are documented at each function.
-#
-# NOT YET IMPLEMENTED (candidate next steps, left as comments where relevant):
-#   * Augmented SC (Ben-Michael et al. 2021) ridge bias-correction for
-#     imperfect pre-fit; penalized SC (Abadie & L'Hour 2021).
-#   * Conformal SC inference (Chernozhukov, Wuthrich & Zhu 2021) as an
-#     alternative to placebo permutation.
-#   * Multiple imputation to propagate WUENIC coverage uncertainty.
-#
-# IMPLEMENTED (recommendation #6): ITS autocorrelation handling now selects OLS
-#   (short pre-segments) vs GLS AR(1) by REML / Prais-Winsten-like (longer
-#   segments) by series length; Newey-West HAC is demoted to an explicit option.
-#   Coefficient draws use a multivariate-t (df = residual df) to widen short-
-#   series intervals. (Bottomley 2023; Turner 2021.)
-#
-# LITERATURE BASIS for the choices below:
-#   SC  - Abadie, Diamond & Hainmueller (2010); Abadie (2021, JEL); epidemiology
-#         tutorial Bouttell/Bonell-style guidance: placebo inference restricted
-#         to comparable-fit donors, RMSPE-ratio permutation p-value.
-#   ITS - Bottomley et al. (2023, Stat Med); Turner et al. (2021, BMC MRM):
-#         account for autocorrelation, but prefer OLS/REML in short segments and
-#         GLS AR(1)/Prais-Winsten in longer ones over Newey-West HAC; do not
-#         trust Durbin-Watson in short series.
-# ============================================================================
-# augsynth/did are used (guarded by requireNamespace) in 03b. Load them SOFTLY
-# here so a missing optional package does not crash sourcing of the pipeline;
-# 03 itself does not require them, and 03b self-skips the methods that do.
 for (.p in c("augsynth", "did"))
   if (requireNamespace(.p, quietly = TRUE))
     suppressPackageStartupMessages(library(.p, character.only = TRUE))
@@ -66,23 +6,8 @@ for (.p in c("augsynth", "did"))
 DEFAULT_SEED <- 20240601L
 
 # ---- ITS autocorrelation policy (recommendation #6) -----------------------
-# Series-length threshold: pre-segments with >= ITS_GLS_MIN_N points use GLS
-# AR(1) by REML (Prais-Winsten-like); shorter segments use OLS with no
-# autocorrelation adjustment. This follows the simulation evidence that, for
-# short series, OLS / REML are better-calibrated than Newey-West HAC, which is
-# unstable and tends to under-cover (Bottomley et al. 2023; Turner et al. 2021).
 ITS_GLS_MIN_N <- 12L
 
-# ITS extrapolation horizon cap (red-team remediation). The previous unbounded
-# default (max_horizon = Inf) let the within-unit logit trend be projected the
-# full length of long conflicts (e.g. Nigeria ~15 yr, Ethiopia ~13 yr), which
-# BOTH over-attributed (Nigeria, large fabricated gaps) and saturated to spurious
-# zeros (Ethiopia, Iraq: cf overtakes observed -> gap <= 0). Post-onset years at
-# or beyond this horizon are now DROPPED from the ITS gap, so only the credible
-# near-onset window enters the YLL chain. Long-conflict period totals are
-# therefore truncated to this window (surfaced via n_valid_years); set the env
-# var CVD_ITS_MAX_HORIZON=Inf to recover the prior behaviour. Aligned with
-# reliable_horizon (8): years already flagged horizon_unreliable are excluded.
 ITS_MAX_HORIZON <- {
   .h <- Sys.getenv("CVD_ITS_MAX_HORIZON", unset = "8")
   if (identical(tolower(.h), "inf")) Inf else as.integer(.h)
@@ -117,9 +42,6 @@ preconflict_sd_coverage <- function(coverage_df, ctry, vacc, preconf_year) {
   max(stats::sd(vals, na.rm = TRUE), 2.0)
 }
 
-# Standard error of the pre-conflict mean (uncertainty in the counterfactual
-# itself, as opposed to natural year-to-year dispersion). Exposed so callers
-# can choose which uncertainty notion to use downstream.
 preconflict_se_mean <- function(coverage_df, ctry, vacc, preconf_year) {
   yrs <- (preconf_year - 2L):preconf_year
   vals <- coverage_df %>%
@@ -131,11 +53,6 @@ preconflict_se_mean <- function(coverage_df, ctry, vacc, preconf_year) {
 }
 
 # ---- METHOD 1: Simple baseline -------------------------------------------
-# ASSUMPTIONS: counterfactual coverage stays FLAT at the 3-year pre-conflict
-# mean (no secular trend); gap_sd reflects natural pre-period dispersion of
-# coverage (floored at 2pp), held constant across conflict years. We also
-# carry se_cf (SE of the counterfactual mean) for callers who want estimate
-# uncertainty rather than dispersion.
 gap_baseline <- function(coverage_df, conflict_df,
                          vaccines = c("BCG", "MCV1", "DTP3")) {
   out <- list()
@@ -165,21 +82,6 @@ gap_baseline <- function(coverage_df, conflict_df,
   dplyr::bind_rows(out)
 }
 
-# ============================================================================
-# DONOR-POOL SCOPE  (F1: SUTVA neighbour exclusion + region/income matching)
-# ----------------------------------------------------------------------------
-# Both peer reviews flag that the donor pool is any non-conflict country
-# worldwide (no neighbour screen, no comparability screen), which (a) admits
-# spillover-contaminated neighbours (SUTVA) and (b) seats richer, flat-trend,
-# high-coverage donors off the treated unit's support. Scope is now selectable;
-# the DEFAULT ("global") reproduces the previous pool exactly, so this is
-# non-breaking. Flip the whole pipeline with CVD_DONOR_SCOPE without editing any
-# call site, or pass scope= per call. Used by SC, SC+cov, AugSC and DiD controls.
-# ============================================================================
-
-# Land/near-maritime neighbours of the 10 treated units (ISO3). Excluding these
-# removes the donors most exposed to cross-border spillover (refugee flows,
-# regional campaign disruption, shared outbreaks). Source: UN geoscheme / CIA WFB.
 CONFLICT_NEIGHBORS <- list(
   BFA = c("MLI","NER","BEN","TGO","GHA","CIV"),
   ETH = c("ERI","DJI","SOM","KEN","SSD","SDN"),
@@ -192,15 +94,10 @@ CONFLICT_NEIGHBORS <- list(
   SYR = c("TUR","IRQ","JOR","LBN","ISR"),
   YEM = c("SAU","OMN","DJI","SOM"))
 
-# Pipeline-wide default scope (env-overridable):
-#   "global" (default) | "no_neighbors" | "region" | "income" | "region_income"
+
 DONOR_SCOPE <- Sys.getenv("CVD_DONOR_SCOPE", unset = "global")
 
-# Build (ISO3 -> region, income_tier) once. Region via {countrycode} (World Bank
-# 7-region; a defensible, available proxy for "same WHO region" -- swap a WHO map
-# in here if you have one). Income tier derived from econ_panel GDP per capita
-# using World Bank FY24 thresholds, so it needs no extra file. Assign the result
-# to `.donor_meta` in 00 after 02b/03 are sourced.
+
 build_donor_meta <- function(coverage_df,
                              econ = if (exists("econ_panel")) econ_panel else NULL,
                              gdp_max_year = NULL) {
@@ -243,9 +140,7 @@ build_donor_meta <- function(coverage_df,
   keep
 }
 
-# Pooled-design variant (DiD): no single treated unit, so take the UNION of the
-# per-cohort scoped pools (drops every cohort's neighbours; keeps any donor in
-# at least one treated region/tier).
+
 did_scope_union <- function(donor_iso3, treated_iso3_vec, scope = DONOR_SCOPE,
                             meta = if (exists(".donor_meta")) .donor_meta else NULL,
                             neighbors = CONFLICT_NEIGHBORS) {
@@ -255,11 +150,6 @@ did_scope_union <- function(donor_iso3, treated_iso3_vec, scope = DONOR_SCOPE,
 }
 
 # ---- SC/ASCM long-horizon flag (F3) ---------------------------------------
-# Donor-comparison gaps grow monotonically with event time (ASCM ~9->33pp by
-# year 17, all on Somalia's 19-yr tail), unlike the flat design-based methods.
-# Mirror ITS: carry horizon_unreliable, and optionally DROP beyond a cap so the
-# YLL chain isn't inflated by extrapolated long-horizon donor gaps. Default keeps
-# all years (flag only) so behaviour is unchanged unless CVD_SC_MAX_HORIZON is set.
 SC_RELIABLE_HORIZON <- as.integer(Sys.getenv("CVD_SC_RELIABLE_HORIZON", unset = "8"))
 SC_MAX_HORIZON <- { .h <- Sys.getenv("CVD_SC_MAX_HORIZON", unset = "Inf")
 if (identical(tolower(.h), "inf")) Inf else as.integer(.h) }
@@ -275,9 +165,6 @@ flag_sc_horizon <- function(gap_tbl, conflict_start,
 }
 
 # ---- METHOD 2: Synthetic Control via tidysynth ---------------------------
-# Donor pool: non-conflict countries with full pre-period coverage data and
-# meaningful variation (not stuck at the ceiling for the entire window), then
-# the optional comparability/SUTVA scope above.
 build_donor_pool <- function(coverage_df, vacc, exclude_iso3, pre_window,
                              treated_iso3 = NULL, scope = DONOR_SCOPE,
                              meta = if (exists(".donor_meta")) .donor_meta else NULL,
@@ -301,15 +188,6 @@ build_donor_pool <- function(coverage_df, vacc, exclude_iso3, pre_window,
 }
 
 # ASSUMPTIONS / CHANGES vs. original:
-#   * Donors must be complete over the FULL pre+post window (was: pre only).
-#     A donor missing a post year would otherwise propagate NA into synth_y.
-#   * Placebos are filtered by pre-period RMSPE before the gap SD is computed
-#     (Abadie-style): placebos that fit their own pre-period poorly produce
-#     spurious post gaps and inflate gap_sd. rmspe_ratio_cap controls the cut.
-#   * Optional lagged-outcome predictors (use_lag_predictors) strengthen the
-#     match beyond a single pre-window mean.
-#   * Output carries pre_rmspe (treated pre-period fit) and n_good_placebos
-#     as diagnostics.
 gap_synthetic <- function(coverage_df, conflict_df,
                           vaccines = c("BCG", "MCV1", "DTP3"),
                           pre_len = 7L, min_donors = 10L,
@@ -450,12 +328,7 @@ gap_synthetic <- function(coverage_df, conflict_df,
         dplyr::summarise(gap_sd = stats::sd(placebo_gap, na.rm = TRUE),
                          .groups = "drop")
       
-      # Field-standard SC inference (Abadie et al. 2010; Abadie 2021): the
-      # post/pre RMSPE RATIO, ranked against placebos. This corrects for
-      # pre-period fit quality (a big post gap means little if the pre fit was
-      # already poor) in a way a raw placebo SD does not. The permutation
-      # p-value is the treated unit's rank among ALL units' ratios. One-sided
-      # (shortfall) is the honest test here given a directional hypothesis.
+      
       post_rmspe_tbl <- full_sc %>%
         dplyr::filter(year %in% post_window) %>%
         dplyr::group_by(.id, .placebo) %>%
@@ -495,38 +368,6 @@ gap_synthetic <- function(coverage_df, conflict_df,
 }
 
 # ---- METHOD 3: ITS with logit link ---------------------------------------
-# Pre-period: logit(coverage/100) = b0 + b1*time
-# Counterfactual for conflict year t: plogis(b0 + b1*t)
-# Jensen correction: average plogis(draws), not plogis(mean).
-#
-# LITERATURE ALIGNMENT (ITS best practice):
-#   * Annual coverage series are autocorrelated; OLS that ignores this yields
-#     standard errors that are too small and CIs that under-cover (Bottomley
-#     et al. 2023, Stat Med; Turner et al. 2021, BMC Med Res Methodol). For the
-#     SHORT pre-segments here, those same papers find OLS / REML better-
-#     calibrated than Newey-West HAC, which is unstable in short series. We
-#     therefore select by length (vcov_type = "auto"): OLS for n_pre <
-#     ITS_GLS_MIN_N, else GLS AR(1) by REML (Prais-Winsten-like). "NW" and a
-#     forced "OLS"/"GLS" remain as explicit options. Coefficient draws use a
-#     multivariate-t (df = residual df) for honest short-sample tails.
-#   * Durbin-Watson is unreliable in short series (Turner et al. 2021); we flag
-#     short segments via short_series / n_pre rather than relying on it.
-#
-# ASSUMPTIONS / CHANGES vs. original:
-#   * The pre-conflict logit-linear trend would continue absent conflict.
-#   * Forecast bootstrap adds RESIDUAL variance (include_resid_var), so cf_sd
-#     is a predictive interval, not just a coefficient interval.
-#   * Coefficient covariance reflects serial correlation via length-based method
-#     selection (OLS for short segments, GLS AR(1)-REML for longer); draws use a
-#     multivariate-t, which widens cf_sd appropriately in short series.
-#   * NO one-sided level cap. The logit link already bounds the counterfactual
-#     to (0,100); a prior cap at pre_max+2 was asymmetric (could only lower the
-#     cf) and pinned the counterfactual below observed for improving countries
-#     over long horizons. Instead, horizon is handled explicitly: years beyond
-#     `reliable_horizon` are flagged (horizon_unreliable) and years beyond
-#     `max_horizon` (default Inf) are dropped. cf_saturated reports how often the
-#     extrapolated cf reaches the ceiling -- the honest signal that a no-control
-#     forecast is overshooting and the comparison-group methods should be trusted.
 gap_its <- function(coverage_df, conflict_df,
                     vaccines = c("BCG", "MCV1", "DTP3"),
                     n_pre_min = 6, n_boot = 1000, pre_lookback = 15L,
@@ -567,11 +408,7 @@ gap_its <- function(coverage_df, conflict_df,
       
       coefs <- stats::coef(fit)
       n_pre <- nrow(pre)
-      # Autocorrelation handling by series length (recommendation #6):
-      #   short pre-segments  -> OLS, no autocorrelation adjustment;
-      #   longer pre-segments  -> GLS AR(1) by REML (Prais-Winsten-like).
-      # Newey-West is demoted to an explicit option ("NW"); it is unstable and
-      # under-covers in short series (Bottomley 2023; Turner 2021).
+    
       method_used <- vcov_type
       if (vcov_type == "auto")
         method_used <- if (n_pre < ITS_GLS_MIN_N) "OLS" else "GLS"
@@ -602,23 +439,11 @@ gap_its <- function(coverage_df, conflict_df,
                       error = function(e) stats::vcov(fit))
       }
       
-      # Multivariate-t coefficient draws widen intervals to reflect estimated-
-      # variance uncertainty in short segments; ITS CIs still tend to under-
-      # cover (Turner 2021), which is reported as a caveat in the diagnostics.
+     
       beta_draws  <- mvt_draws(n_boot, mu = coefs, Sigma = V,
                                df = max(resid_df, 1))
       
-      # Extrapolation horizon. ITS forecasts a within-unit pre-trend forward, so
-      # its credibility decays with distance from the pre-period. We do NOT cap
-      # the counterfactual level (the previous one-sided cap at pre_max+2 could
-      # only push the counterfactual DOWN: for an improving country the logit
-      # trend clears pre_max almost at once, so the cap pinned the cf near the
-      # pre-conflict level while observed coverage kept rising past it, producing
-      # a spurious negative gap -- e.g. Ethiopia, 2012-2024). The logit link
-      # already bounds the cf to (0, 100); instead we (a) flag years beyond
-      # `reliable_horizon` as horizon_unreliable, and (b) optionally drop years
-      # beyond `max_horizon` (default Inf = keep all, flagged) so long-conflict
-      # ITS estimates can be down-weighted or excluded rather than fabricated.
+     
       post_years_all <- post$year
       keep_h <- (post_years_all - ci$conflict_start) < max_horizon
       post   <- post[keep_h, , drop = FALSE]
@@ -670,9 +495,7 @@ gap_its <- function(coverage_df, conflict_df,
 estimate_all_gaps <- function(coverage_df, conflict_df,
                               vaccines = c("BCG", "MCV1", "DTP3"),
                               seed = DEFAULT_SEED) {
-  # Harmonization check: Baseline uses preconflict_year; SC/ITS use
-  # conflict_start. Warn if they disagree so gaps aren't compared across
-  # mismatched pre/post boundaries.
+  
   if ("preconflict_year" %in% names(conflict_df)) {
     mismatch <- conflict_df %>%
       dplyr::filter(preconflict_year != conflict_start - 1L)
@@ -703,17 +526,9 @@ estimate_all_gaps <- function(coverage_df, conflict_df,
 
 # ============================================================================
 # DIAGNOSTIC / SENSITIVITY TESTS
-# ----------------------------------------------------------------------------
-# These are validation tools, not part of the production estimate. Run them
-# after estimate_all_gaps() to sanity-check the counterfactuals.
-# ============================================================================
+
 
 # ---- D1: Placebo-in-time --------------------------------------------------
-# Pretend each conflict happened entirely BEFORE its real start, in a window
-# where no conflict occurred. A well-behaved method should return gaps ~ 0
-# there. Large systematic placebo gaps => the counterfactual model is picking
-# up trend/noise, not conflict. (SC omitted here: expensive; rerun gap_synthetic
-# on the shifted conflict_df if needed.)
 diag_placebo_in_time <- function(coverage_df, conflict_df,
                                  method = c("baseline", "its"),
                                  vaccines = c("BCG", "MCV1", "DTP3"),
@@ -749,9 +564,6 @@ diag_placebo_in_time <- function(coverage_df, conflict_df,
 }
 
 # ---- D2: Cross-method agreement -------------------------------------------
-# Pairwise correlation, bias (method A - method B), and mean abs difference on
-# matched country-vaccine-year cells. High disagreement flags model-driven
-# (not data-driven) gaps.
 diag_cross_method <- function(all_gaps) {
   w <- all_gaps %>%
     dplyr::mutate(m = dplyr::case_when(
@@ -780,11 +592,6 @@ diag_cross_method <- function(all_gaps) {
 }
 
 # ---- D3: ITS residual / autocorrelation report ----------------------------
-# Surfaces pre-period fit health: residual df (extrapolation risk), residual
-# sigma (forecast width), lag-1 autocorrelation and Durbin-Watson (independence
-# assumption). NOTE (Turner et al. 2021, BMC MRM): the DW test is unreliable in
-# short series, so we report it but key the recommendation off series length and
-# the AR(1) magnitude rather than DW alone.
 diag_its_residuals <- function(coverage_df, conflict_df,
                                vaccines = c("BCG", "MCV1", "DTP3"),
                                pre_lookback = 15L) {
@@ -809,11 +616,7 @@ diag_its_residuals <- function(coverage_df, conflict_df,
       ac1 <- if (length(r) > 2) stats::cor(r[-1], r[-length(r)]) else NA_real_
       dw  <- if (length(r) > 2) sum(diff(r)^2) / sum(r^2) else NA_real_
       n_pre <- nrow(pre)
-      # Recommendation per ITS literature (Bottomley 2023; Turner 2021): for
-      # short pre-segments use OLS (no autocorrelation adjustment) or REML; for
-      # longer segments use GLS AR(1) / Prais-Winsten. gap_its now selects OLS
-      # vs GLS AR(1)-REML by series length (threshold ITS_GLS_MIN_N); Newey-West
-      # is an option, not the default. All ITS intervals tend to under-cover.
+      
       rec <- if (n_pre < ITS_GLS_MIN_N)
         "short series: OLS/REML preferred (no HAC); CIs under-cover"
       else if (!is.na(ac1) && abs(ac1) > 0.3)
@@ -838,8 +641,6 @@ diag_its_residuals <- function(coverage_df, conflict_df,
 }
 
 # ---- D4: Gap distribution summary -----------------------------------------
-# Per-method shape check: a large share of negative gaps (coverage above the
-# counterfactual) or implausibly large gaps warrants scrutiny.
 diag_gap_summary <- function(all_gaps) {
   all_gaps %>%
     dplyr::group_by(method) %>%
@@ -856,8 +657,6 @@ diag_gap_summary <- function(all_gaps) {
 }
 
 # ---- D5: ITS pre-window sensitivity ---------------------------------------
-# Re-estimate ITS under several lookback lengths and compare per-cell gaps.
-# Large swings mean the extrapolation is window-sensitive (fragile).
 diag_its_window_sensitivity <- function(coverage_df, conflict_df,
                                         vaccines = c("BCG", "MCV1", "DTP3"),
                                         lookbacks = c(10L, 15L, 20L),
