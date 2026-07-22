@@ -1,33 +1,4 @@
-# ============================================================================
-# 11_PLACEBO_IN_TIME.R   (supplementary; PRIMARY spec unchanged)
-# ----------------------------------------------------------------------------
-# In-time placebo falsification across ALL estimators. Re-index each conflict to
-# a same-length window ENDING the year before its real onset (a period with no
-# conflict), then re-estimate the coverage gap. A valid counterfactual must
-# return placebo gaps ~ 0 there; large systematic placebo gaps mean the method
-# is picking up pre-existing trend/noise rather than the conflict. This is the
-# falsification test recommended for synthetic-control / counterfactual designs
-# (Abadie, Diamond & Hainmueller 2015; Chernozhukov, Wuthrich & Zhu 2021;
-# Ben-Michael, Feller & Rothstein 2021 in-time placebo checks) and complements
-# the cross-sectional placebo permutation already inside gap_synthetic().
-#
-# The base diagnostic in 03 (diag_placebo_in_time) covers only baseline + ITS
-# (SC/DiD were skipped as expensive). This module runs the full estimator set on
-# the placebo window and contrasts placebo vs REAL gaps, turning the check into a
-# reportable supplementary table/figure.
-#
-# COST: re-runs gap estimation (incl. SC permutation inference and DiD) once on
-# the placebo window. Opt-in via RUN_PLACEBO_IN_TIME in 00. Some early placebo
-# windows pre-date the coverage series for a few countries; those cells simply
-# drop out (reported via n).
-#
-# Source AFTER 03b/05 (uses estimate_all_gaps_plus, ALL_METHODS, gap_df,
-# save_fig/save_tab, nm_palette/theme).
-# ============================================================================
 
-# Build the in-time placebo conflict table: same-duration window placed entirely
-# before the real onset (identical construction to 03's diag_placebo_in_time, so
-# the two agree on baseline/ITS).
 .placebo_conflict_info <- function(conflict_df, baseline_window = 3L) {
   dur <- pmax(conflict_df$conflict_end - conflict_df$conflict_start, 1L)
   conflict_df %>%
