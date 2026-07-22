@@ -1,30 +1,3 @@
-# ============================================================================
-# 02b_ECON_COVARIATES.R   (new module)
-# ----------------------------------------------------------------------------
-# Loads economic / human-development covariates used by the covariate-adjusted
-# estimators added in 03b_advanced_methods.R:
-#   * World Bank GDP per capita (current US$)   -> GDP_pc, log_GDP_pc
-#   * UNDP HDR Human Development Index series    -> sch_eys, sch_mys, gni_pc, hdi
-#
-# SOURCE THIS AFTER 02_load_data.R AND BEFORE 03b_advanced_methods.R. It depends
-# on objects created in 02 (harmonise_country(), to_long_wb(), iso3_lookup,
-# country_iso_lookup, interpolate_panel(), covariates_panel) and on YLL_DATA_DIR
-# from 01.
-#
-# It (a) augments covariates_panel with the new columns (interpolated within
-# ISO3, same convention as the incidence/demographic series) and (b) builds a
-# tidy `econ_panel` keyed by (ISO3, country, year) that the synthetic-control /
-# augmented-SC / DiD code joins in as matching predictors.
-#
-# Files expected (paths relative to YLL_DATA_DIR), overridable via env vars:
-#   WB GDPpC.csv   (World Bank wide format: Country.Code + yearly columns)
-#   hdi_data.csv   (UNDP HDR long format: countryIsoCode, indicatorCode, year,
-#                   value, ...)
-# Neither file is required: if absent, this module warns and leaves the
-# covariate columns as NA, so the covariate-adjusted estimators degrade to a
-# clear "skipped: covariates unavailable" rather than erroring.
-# ============================================================================
-
 stopifnot(exists("covariates_panel"), exists("harmonise_country"),
           exists("to_long_wb"), exists("YLL_DATA_DIR"))
 
