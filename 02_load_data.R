@@ -1,22 +1,4 @@
-# ============================================================================
-# 02_LOAD_DATA.R
-# ----------------------------------------------------------------------------
-# Reads all source data (coverage, IHME GBD incidence, World Bank covariates)
-# and builds a long-format coverage panel + a wide covariates panel for use
-# downstream.
-#
-# CHANGED in this version (vs prior): disease incidence now comes from IHME
-# GBD (true incidence estimates with UIs) instead of WHO surveillance reported
-# cases. WHO surveillance under-reports VPDs by 10-100x in LMIC and even more
-# in conflict settings; using it as the incidence input was the dominant
-# source of magnitude error in prior outputs.
-#
-# IHME files expected at <DATA_DIR>/IHME Data/IHME_<Disease>_GBD.csv with
-# columns: measure_name, location_name, sex_name, age_name, metric_name,
-# year, val, upper, lower.
-#
-# Pre-requisite: 01_setup_and_parameters.R must already be sourced.
-# ============================================================================
+
 
 # ---- 1. Read raw files ----------------------------------------------------
 read_csv_safe <- function(path) {
@@ -85,16 +67,6 @@ WB_pop_long    <- to_long_wb(pop_data, "Population") %>%
 WB_life_long   <- to_long_wb(life_data, "Life_Expectancy")
 
 # ---- 4. Load IHME GBD incidence ------------------------------------------
-# Filter: measure="Incidence", metric="Rate", sex="Both", age="<1 year".
-# Rate is per 100,000 children under 1 -> divide by 1e5 for per-person.
-# Compute per-row lognormal sigma from (lower, upper) for Monte Carlo.
-#
-# Age band note: prior pipeline convention is <1 year for all diseases
-# (matches Birth_Cohort multiplier in the YLL formula). This is appropriate
-# for pertussis and tetanus (mortality concentrated in infants) but
-# under-counts measles/diphtheria/TB mortality from older children.
-# Reviewers may want a sensitivity using under-5 age band; that requires
-# also switching Birth_Cohort to under-5 population.
 read_ihme_incidence <- function(filename, out_prefix,
                                 age_band = "<1 year") {
   path <- file.path(IHME_DIR, filename)
@@ -155,12 +127,7 @@ read_ihme_incidence <- function(filename, out_prefix,
 }
 
 message("Loading IHME GBD incidence...")
-# Age band per disease comes from disease_age_band() (01). In the default
-# 'infant' mode all bands are '<1 year'; under 'under5_tb_diph' TB and
-# diphtheria use 'Under 5'. (Verify the exact age_name strings in your IHME
-# files; "Under 5" vs "<5 years" vs separate "<1 year"+"1 to 4" rows differ by
-# extraction. Combining separate rows requires population-weighting, not
-# averaging of rates.)
+
 ihme_tb       <- read_ihme_incidence("IHME_Tuberculosis_GBD.csv", "TB",
                                      age_band = disease_age_band("Tuberculosis"))
 ihme_measles  <- read_ihme_incidence("IHME_Measles_GBD.csv",      "Measles",
@@ -169,11 +136,6 @@ ihme_diphth   <- read_ihme_incidence("IHME_Diphtheria_GBD.csv",   "Diphtheria",
                                      age_band = disease_age_band("Diphtheria"))
 ihme_pert     <- read_ihme_incidence("IHME_Pertussis_GBD.csv",    "Pertussis",
                                      age_band = disease_age_band("Pertussis"))
-# TETANUS (recommendation #8): this file MUST be GBD cause "Tetanus" (which
-# EXCLUDES neonatal tetanus), read at the <1 band -> post-neonatal infant
-# tetanus, matching the post-neonatal CFR and the DTP3 lever. If it is
-# "Neonatal tetanus" or a combined series the causal chain is INVALID; set
-# TETANUS_ARM='drop' in 01, or supply the non-neonatal cause file.
 message("  NOTE: IHME_Tetanus_GBD.csv must be GBD cause 'Tetanus' (excludes ",
         "neonatal tetanus). See TETANUS_ARM (01).")
 ihme_tet      <- read_ihme_incidence("IHME_Tetanus_GBD.csv",      "Tetanus",
@@ -245,11 +207,6 @@ covariates_panel <- covariates_panel %>%
   dplyr::left_join(ihme_tet,     by = c("country", "year"))
 
 # ---- 6b. Under-5 population denominator (recommendation #7) ----------------
-# Only needed when AGE_BAND_MODE == 'under5_tb_diph'. The base 'infant' mode is
-# unaffected. We do NOT approximate under-5 population from births (that would
-# bias the denominator ~5x); a real series must be supplied. Expected file:
-# <YLL Data>/WB_Population_Under5.csv in the same wide format as WB_Population
-# Data.csv (e.g. World Bank SP.POP.0004.MA/FE summed, or UN WPP under-5 pop).
 if (exists("AGE_BAND_MODE") && AGE_BAND_MODE == "under5_tb_diph") {
   u5_path <- file.path(YLL_DATA_DIR, "WB_Population_Under5.csv")
   if (!file.exists(u5_path)) {
@@ -265,10 +222,6 @@ if (exists("AGE_BAND_MODE") && AGE_BAND_MODE == "under5_tb_diph") {
 }
 
 # ---- 7. Interpolation + LOCF for terminal years ---------------------------
-# Use linear interpolation for interior gaps. For trailing NAs (e.g. GBD
-# data ending in 2021 while a conflict runs through 2024), use rule = 2 to
-# carry the last observation forward. This is necessary because the most
-# recent GBD release typically lags 2-3 years behind the present.
 interpolate_panel <- function(df, vars) {
   df %>%
     dplyr::group_by(ISO3) %>%
