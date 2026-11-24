@@ -1,3 +1,7 @@
+# 08_perbirth.R | in: yll_country, covariates_panel (Birth_Cohort), conflict_info | out: Table_S4_yll_per_1000_births, Figure_S_yll_per_birth | Methods: Sensitivity (vi) population-normalized burden
+# YLL per 1,000 births = 1000 * country YLL (sum over diseases) / births summed over conflict_start..conflict_end.
+
+
 # Total births over each country's conflict window (the per-birth denominator).
 conflict_window_births <- function(covariates = covariates_panel,
                                    conflict_df = conflict_info) {
@@ -17,7 +21,7 @@ conflict_window_births <- function(covariates = covariates_panel,
 # YLL per 1,000 births by (country, method) for the headline scenario.
 yll_per_birth <- function(yll_country, covariates = covariates_panel,
                           conflict_df = conflict_info,
-                          framing_focus = if (exists("FRAMING_HEADLINE")) FRAMING_HEADLINE else "campaign_topup",
+                          framing_focus = FRAMING_HEADLINE,
                           catchup_focus = 0, discount = c("undisc", "disc")) {
   discount <- match.arg(discount)
   ycol <- if (discount == "undisc") "yll_undisc_total_mean" else "yll_disc_total_mean"
@@ -39,6 +43,9 @@ yll_per_birth <- function(yll_country, covariates = covariates_panel,
       discount = discount)
 }
 
+# Figure: per-birth YLL ranked by the median across methods (Cleveland dot plot,
+# one dot per method), so intensity ordering is visible independent of which
+# estimator is used.
 make_fig_per_birth <- function(pb_df) {
   if (is.null(pb_df) || nrow(pb_df) == 0)
     stop("make_fig_per_birth: empty per-birth table.")
@@ -46,16 +53,14 @@ make_fig_per_birth <- function(pb_df) {
     dplyr::summarise(med = stats::median(yll_per_1000_births, na.rm = TRUE),
                      .groups = "drop") %>%
     dplyr::arrange(med)
-  meth_levels <- if (exists("METHOD_ORDER")) METHOD_ORDER else unique(pb_df$method)
+  meth_levels <- METHOD_ORDER
   df <- pb_df %>%
     dplyr::mutate(country = factor(country, levels = ord$country),
                   method  = factor(method, levels = intersect(meth_levels, unique(method))))
   ggplot2::ggplot(df, ggplot2::aes(x = yll_per_1000_births, y = country,
                                    colour = method)) +
     ggplot2::geom_point(size = 2.4, alpha = 0.85) +
-    { if (exists("nm_palette"))
-      ggplot2::scale_colour_manual(values = nm_palette, name = "Estimator")
-      else ggplot2::scale_colour_discrete(name = "Estimator") } +
+    ggplot2::scale_colour_manual(values = nm_palette, name = "Estimator") +
     ggplot2::scale_x_continuous(labels = scales::comma_format()) +
     ggplot2::labs(
       x = "Conflict-attributable YLL per 1,000 births (over conflict window)",
@@ -63,7 +68,7 @@ make_fig_per_birth <- function(pb_df) {
       title = "Intensity of conflict-attributable vaccination loss, population-normalised",
       subtitle = "Per-birth rate separates severity of disruption from population size; contrast with the Nigeria-dominated absolute total.",
       caption = "Headline scenario; one point per estimator. Countries ordered by cross-method median.") +
-    { if (exists("theme_nm")) theme_nm() else ggplot2::theme_minimal() }
+    theme_nm()
 }
 
 # Driver: build table + figure, with input self-tests.
@@ -79,11 +84,7 @@ run_yll_per_birth <- function(yll_country, covariates = covariates_panel,
     message("  [per-birth diag] missing/zero birth denominator for: ",
             paste(bad$country, collapse = ", "),
             " -> per-birth rate is NA there (check WB_Birth Rate / Population).")
-  if (exists("save_tab")) save_tab(pb, "Table_S4_yll_per_1000_births.csv")
-  fig <- tryCatch(make_fig_per_birth(pb),
-                  error = function(e) { message("  per-birth fig skipped: ",
-                                                conditionMessage(e)); NULL })
-  if (!is.null(fig) && exists("save_fig"))
-    save_fig(fig, "Figure_S_yll_per_birth", width = 9, height = 6)
+  save_tab(pb, "Table_S4_yll_per_1000_births.csv")
+  save_fig(make_fig_per_birth(pb), "Figure_S_yll_per_birth", width = 9, height = 6)
   invisible(pb)
 }
