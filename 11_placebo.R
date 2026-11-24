@@ -1,4 +1,10 @@
+# 11_placebo.R | in: coverage_long, conflict_info, gap_df | out: Table_S7_placebo_in_time, Figure_S_placebo_in_time | Methods: Sensitivity (iv) in-time placebo
+# Each conflict re-indexed to an equal-length window ending the year before onset (duration = end - start,
+# min 1); all estimators re-run there; placebo gaps should be ~0.
 
+# Build the in-time placebo conflict table: same-duration window placed entirely
+# before the real onset (identical construction to 03's diag_placebo_in_time, so
+# the two agree on baseline/ITS).
 .placebo_conflict_info <- function(conflict_df, baseline_window = 3L) {
   dur <- pmax(conflict_df$conflict_end - conflict_df$conflict_start, 1L)
   conflict_df %>%
@@ -29,24 +35,17 @@
 # Driver: run placebo gaps for all methods, contrast with real gaps, verdict.
 run_placebo_in_time <- function(coverage_df, conflict_df = conflict_info,
                                 gap_df_real = NULL,
-                                methods = if (exists("ALL_METHODS")) ALL_METHODS else NULL,
+                                methods = ALL_METHODS,
                                 placebo_tol_pp = 3, ratio_tol = 0.33,
-                                seed = if (exists("DEFAULT_SEED")) DEFAULT_SEED else 42) {
+                                seed = SEED_GAP) {
   fake <- .placebo_conflict_info(conflict_df)
   message("  Placebo-in-time: estimating gaps on pre-onset windows (this re-runs ",
           "SC/DiD; expect skips where the placebo window pre-dates coverage data).")
-  gp <- tryCatch(estimate_all_gaps_plus(coverage_df, fake, methods = methods),
-                 error = function(e) { message("    placebo gap step failed: ",
-                                               conditionMessage(e)); NULL })
-  if (is.null(gp) || nrow(gp) == 0) {
-    message("  Placebo-in-time: no placebo gaps produced -> skipping."); return(invisible(NULL))
-  }
+  gp <- estimate_all_gaps_plus(coverage_df, fake, methods = methods)
   placebo <- .summarise_gaps_by_method(gp, "placebo")
   
   # Real gaps for contrast (use the passed gap_df if available, else recompute).
-  real_src <- if (!is.null(gap_df_real)) gap_df_real else
-    tryCatch(estimate_all_gaps_plus(coverage_df, conflict_df, methods = methods),
-             error = function(e) NULL)
+  real_src <- gap_df_real
   real <- .summarise_gaps_by_method(real_src, "real")
   
   out <- placebo %>% dplyr::left_join(real, by = "method") %>%
@@ -70,18 +69,14 @@ run_placebo_in_time <- function(coverage_df, conflict_df = conflict_info,
     message("  [placebo diag] all estimators return near-zero placebo gaps ",
             "(|mean| <= ", placebo_tol_pp, "pp): falsification passed.")
   
-  if (exists("save_tab")) save_tab(out, "Table_S7_placebo_in_time.csv")
-  fig <- tryCatch(.fig_placebo(out),
-                  error = function(e) { message("  placebo fig skipped: ",
-                                                conditionMessage(e)); NULL })
-  if (!is.null(fig) && exists("save_fig"))
-    save_fig(fig, "Figure_S_placebo_in_time", width = 9, height = 5.5)
+  save_tab(out, "Table_S7_placebo_in_time.csv")
+  save_fig(.fig_placebo(out), "Figure_S_placebo_in_time", width = 9, height = 5.5)
   invisible(out)
 }
 
 # Figure: placebo vs real mean |gap| by method (placebo bars should be near 0).
 .fig_placebo <- function(out) {
-  meth_levels <- if (exists("METHOD_ORDER")) METHOD_ORDER else unique(out$method)
+  meth_levels <- METHOD_ORDER
   long <- out %>%
     dplyr::select(method, mean_abs_placebo, mean_abs_real) %>%
     tidyr::pivot_longer(c(mean_abs_placebo, mean_abs_real),
@@ -98,5 +93,5 @@ run_placebo_in_time <- function(coverage_df, conflict_df = conflict_info,
       title = "In-time placebo falsification: pre-onset gaps should be ~ 0",
       subtitle = "Placebo re-indexes each conflict to an equal-length pre-onset window; large placebo bars indicate a trend-driven counterfactual.",
       caption = "Abadie et al. 2015; Chernozhukov, Wuthrich & Zhu 2021. Real bars shown for contrast.") +
-    { if (exists("theme_nm")) theme_nm() else ggplot2::theme_minimal() }
+    theme_nm()
 }
