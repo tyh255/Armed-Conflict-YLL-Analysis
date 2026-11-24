@@ -1,5 +1,12 @@
+# 09_tornado.R | in: yll draws, covariates_panel | out: Table_S5 (composite anchor), Table_S5b (SC anchor), Figure_S_structured_sensitivity[_SCanchor] | Methods: Sensitivity (iii) structured sensitivity
+# One-at-a-time axes. Exact from draws: discounting, catch-up 50/100%, routine-recovery framing.
+# Rescale approx (mean factor on existing draws): national life table (WB LE over window / L0),
+# measles multiplier x2.24, TB untreated CFR, TB treatment coverage 30/60%. Incidence-basis bounds
+# are appended as exact re-run rows by 12_revision.R.
+
+
 # Reference ex0 (headline life table) and central TB effective CFR.
-.REF_EX0 <- if (exists("ref_ex_at_age")) ref_ex_at_age(0) else 88.8718951
+.REF_EX0 <- REF_L0
 .CFR_TB_UNTREATED <- 0.436
 .CFR_TB_TREATED   <- 0.019
 .cfr_eff_tb <- function(p_treat) p_treat * .CFR_TB_TREATED + (1 - p_treat) * .CFR_TB_UNTREATED
@@ -8,11 +15,7 @@
 # (Measles_conflict_mult; percentile-matched lognormal central). The realised
 # draw MEAN is modestly higher (~2.43) than this median, so using the central
 # makes the "measles multiplier ON" tornado bar a mild LOWER bound on that swing.
-.MEASLES_MULT_MEAN <- {
-  v <- if (exists("params"))
-    params$mean[params$parameter == "Measles_conflict_mult"][1] else NA_real_
-  if (length(v) == 1 && is.finite(v)) v else 2.24
-}
+.MEASLES_MULT_MEAN <- params$mean[params$parameter == "Measles_conflict_mult"]   # median 2.24 (mild lower bound on the ~2.43 mean)
 
 # Per-country life-table rescale factor (local national LE over the conflict
 # window vs the reference ex0). Approximates switching LIFE_TABLE_MODE to a
@@ -31,9 +34,9 @@
     dplyr::select(country, le_factor = factor)
 }
 
-# Per-(disease,country) 
+# composite cell map (same rule as assemble_headline_totals), fixed at the headline scenario
 .composite_cmap <- function(draws, anchor_priority, catchup_focus = 0,
-                            framing_focus = if (exists("FRAMING_HEADLINE")) FRAMING_HEADLINE else "campaign_topup") {
+                            framing_focus = FRAMING_HEADLINE) {
   d <- draws %>% dplyr::filter(catchup == catchup_focus, framing == framing_focus)
   keep <- vapply(d$d_undisc, function(x) !is.null(x) && length(x) > 0, logical(1))
   d <- d[keep, , drop = FALSE]
@@ -46,12 +49,15 @@
     dplyr::select(disease, country, method)
 }
 
-# Core: total over a CELL SET
+# Core: total over a CELL SET, with optional per-cell rescale. The cell set is
+# either a single anchor method (cmap = NULL, legacy) or a composite method-map
+# (cmap = the .composite_cmap() tibble), inner-joined on (disease,country,method)
+# so the per-cell estimator is held fixed across axes.
 .tornado_total <- function(draws, anchor_method = NULL, cmap = NULL,
                            disease_factor = function(x) 1,
                            country_factor = NULL,
                            discount = "undisc", catchup_focus = 0,
-                           framing_focus = if (exists("FRAMING_HEADLINE")) FRAMING_HEADLINE else "campaign_topup") {
+                           framing_focus = FRAMING_HEADLINE) {
   col <- if (discount == "undisc") "d_undisc" else "d_disc"
   d <- draws %>% dplyr::filter(catchup == catchup_focus, framing == framing_focus)
   d <- if (!is.null(cmap))
@@ -157,7 +163,8 @@ run_structured_sensitivity <- function(yll_draws,
   )
   tab <- dplyr::bind_rows(rows) %>% dplyr::mutate(anchor_method = anchor_label)
   
-  # SELF-TEST: catch-up and discounting must REDUCE the total (monotone, signed)
+  # SELF-TEST: catch-up and discounting must REDUCE the total (monotone, signed);
+  # measles-ON and TB-untreated must INCREASE it; local LE must reduce it.
   .chk <- function(scn, want) {
     r <- tab$pct_change[startsWith(tab$scenario, scn)]
     if (length(r) >= 1 && is.finite(r[1]) &&
@@ -169,36 +176,27 @@ run_structured_sensitivity <- function(yll_draws,
   .chk("discounted", "down"); .chk("local national life table", "down")
   .chk("measles multiplier ON", "up"); .chk("TB untreated CFR", "up")
   
-  if (exists("save_tab")) save_tab(tab, out_table)
-  fig <- tryCatch(.fig_tornado(tab, central_mean),
-                  error = function(e) { message("  tornado fig skipped: ",
-                                                conditionMessage(e)); NULL })
-  if (!is.null(fig) && exists("save_fig"))
-    save_fig(fig, out_fig, width = 9, height = 6)
-  message("  Tornado anchor = ", anchor_label,
-          "; central undiscounted total = ", format(round(central_mean), big.mark = ","),
-          ". NOTE: ITS-horizon axis needs a re-run (CVD_ITS_MAX_HORIZON); see merge_rerun().")
+  save_tab(tab, out_table)
+  save_fig(.fig_tornado(tab, central_mean), out_fig, width = 9, height = 6)
+  message("  Tornado anchor = ", anchor_label, "; central = ", format(round(central_mean), big.mark = ","))
   
-  # ---- companion: SC single-method tornado (the old 7-country anchor)
+  # ---- companion: SC single-method tornado (the old 7-country anchor) for the
+  # appendix, so re-anchoring on the composite loses nothing. Guard against
+  # recursion with also_single = FALSE and a distinct output filename.
   if (anchor_mode == "composite" && isTRUE(also_single) &&
       anchor_method %in% unique(yll_draws$method)) {
     comp_table <- sub("\\.csv$", "_SCanchor.csv", out_table)        # always distinct
     comp_table <- sub("Table_S5_", "Table_S5b_", comp_table, fixed = TRUE)  # S5 -> S5b
-    invisible(tryCatch(
-      run_structured_sensitivity(
-        yll_draws, anchor_mode = "single", anchor_method = anchor_method,
-        anchor_priority = anchor_priority, also_single = FALSE,
-        out_table = comp_table,
-        out_fig = paste0(out_fig, "_SCanchor"),
-        covariates = covariates, conflict_df = conflict_df),
-      error = function(e) { message("  S5b SC-anchor companion skipped: ",
-                                    conditionMessage(e)); NULL }))
+    run_structured_sensitivity(
+      yll_draws, anchor_mode = "single", anchor_method = anchor_method,
+      anchor_priority = anchor_priority, also_single = FALSE,
+      out_table = comp_table, out_fig = paste0(out_fig, "_SCanchor"),
+      covariates = covariates, conflict_df = conflict_df)
   }
   invisible(tab)
 }
 
-# Helper to fold a full-re-run total (e.g. CVD_ITS_MAX_HORIZON=Inf) into the
-# tornado table after the fact, keeping the rescale-approx axes honest.
+# append an exact re-run total (incidence-basis bounds, 12_revision.R) to the tornado
 merge_rerun <- function(tornado_tab, scenario, axis, yll_mean, lo = NA, hi = NA) {
   central_mean <- tornado_tab$yll[tornado_tab$scenario == "central (headline)"]
   dplyr::bind_rows(tornado_tab, tibble::tibble(
@@ -224,6 +222,6 @@ merge_rerun <- function(tornado_tab, scenario, axis, yll_mean, lo = NA, hi = NA)
       title = "Structured (one-at-a-time) sensitivity of the headline YLL total",
       subtitle = sprintf("Central (headline) undiscounted total = %s. Bars show single-axis perturbations.",
                          format(round(central_mean), big.mark = ",")),
-      caption = "Approx axes rescale existing draws by the mean CFR/L factor; ITS-horizon requires a re-run.") +
-    { if (exists("theme_nm")) theme_nm() else ggplot2::theme_minimal() }
+      caption = "Approx axes rescale existing draws by the mean CFR/L factor.") +
+    theme_nm()
 }
