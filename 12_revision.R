@@ -1,58 +1,14 @@
-# ============================================================================
-# 12_REVISION_ANALYSES.R   (supplementary; PRIMARY spec unchanged)
-# ----------------------------------------------------------------------------
-# Additive revision analyses requested by review. NONE alters the headline
-# (Tables 1-2, Figs 1-4). Each function self-skips on missing input. Five blocks:
-#
-#   (R5)  Temporal concentration / peak single-year burden.
-#         Reviewer: cumulative + per-capita both hide acute one-cohort collapses
-#         (Myanmar) vs chronic erosion (Nigeria). We add peak single-year coverage
-#         gap (model-free, from gap_df) and peak single-year YLL (from the retained
-#         yearly summary), plus a concentration index = peak-year / cumulative.
-#
-#   (R1)  COVID-19 confounding of the conflict window.
-#         (a) Mean-level pandemic-cohort share: fraction of each country's
-#             composite YLL accruing in the 2020-2021 (and 2020-2022) cohort-years
-#             -- "how much of each country's gap survives" -- with NO re-run.
-#         (b) Draw-level COVID-excluded headline: one re-run of run_full_yll on a
-#             gap_df with 2020-2021 cohort-years dropped, re-assembled through the
-#             SAME composite as the headline. Opt-in (re-run); CRN-matched seed.
-#
-#   (R2)  Country dominance / leave-one-out. Composite headline recomputed with
-#         each country removed (Nigeria-excluded is the headline row), exact and
-#         draw-level (the composite is a sum of per-country draw vectors).
-#
-#   (R10) Estimator-selection sensitivity of the composite. The 10-country
-#         composite recomputed with each estimator placed FIRST in the priority
-#         (best-available fills the rest), exposing how much of the total is an
-#         artefact of the SC->DiD->baseline selection rule rather than the data.
-#
-#   (R7)  Convention corners. The four-corner table (undiscounted/discounted x
-#         reference/national life table) computed EXACTLY at the draw level from
-#         the existing d_undisc/d_disc draws (infant deaths use a single age, so
-#         the national-LE discount factor is analytic), giving a co-equal
-#         "conservative-conventions" headline beside the maximal one.
-#
-#   (R3)  [opt-in re-run] Pertussis incidence-uncertainty stress. Incidence is
-#         ALREADY lognormally sampled from the GBD 95% UI (02_load_data.R); this
-#         re-runs the headline with the pertussis log-sigma floored at the wider
-#         published modelling range (deaths ~38k-670k, ~18-fold) to show the
-#         decomposition is stable to the shakiest input.
-#
-# Source AFTER 04/05/05c and 09 (uses yll_raw, gap_df, covariates_panel,
-# conflict_info, assemble_headline_totals, run_full_yll, ref_ex_at_age,
-# FRAMING_HEADLINE, DISCOUNT_RATE, save_tab/OUT_DIR).
-# ============================================================================
+# 12_revision.R | in: yll_raw, gap_df, covariates_panel | out: Tables S8 (temporal), S9/S9b (pandemic share, COVID-excluded re-run), S10 (leave-one-out), S11 (estimator-first), S12 (convention corners), S13 (pertussis-sigma re-run), S14 (incidence basis re-runs; appends 2 rows to S5), yll_draws_headline_scenario.rds | Methods: Sensitivity (ix)-(xiv)
+# Re-runs (COVID-excluded, pertussis stress: n_sim 3000; incidence basis phi=1 and none: n_sim 10000) reuse SEED_MC,
+# so shared draws are common random numbers with the headline.
 
 # ---- Shared small helpers --------------------------------------------------
 
 # Reference ex0 (headline life table), matching 09's .REF_EX0 fallback.
-.rev_ref_ex0 <- function() {
-  if (exists("ref_ex_at_age")) ref_ex_at_age(0) else 88.8718951
-}
+.rev_ref_ex0 <- function() REF_L0
 
-.rev_framing <- function() if (exists("FRAMING_HEADLINE")) FRAMING_HEADLINE else "campaign_topup"
-.rev_rate    <- function() if (exists("DISCOUNT_RATE")) DISCOUNT_RATE else 0.03
+.rev_framing <- function() FRAMING_HEADLINE
+.rev_rate    <- function() DISCOUNT_RATE
 
 # Draw-vector -> c(mean, lo, hi). NA-safe for an absent vector.
 .rev_q <- function(v) {
@@ -93,9 +49,7 @@
 
 .rev_save <- function(tbl, file) {
   if (is.null(tbl) || nrow(tbl) == 0) return(invisible(NULL))
-  if (exists("save_tab")) save_tab(tbl, file)
-  else if (exists("OUT_DIR"))
-    utils::write.csv(tbl, file.path(OUT_DIR, file), row.names = FALSE)
+  save_tab(tbl, file)
   invisible(tbl)
 }
 
@@ -354,9 +308,7 @@ revision_convention_corners <- function(yll_draws,
   disc_factor <- function(L) ifelse(L > 0, (1 - exp(-r * L)) / (r * L), 1)
   
   # Per-cell reference L (robust to the under-5 age-band mode).
-  L_ref_cell <- if (exists("age_at_death_for_disease") && exists("ref_ex_at_age"))
-    vapply(pick$disease, function(dis) ref_ex_at_age(age_at_death_for_disease(dis)), numeric(1))
-  else rep(.rev_ref_ex0(), nrow(pick))
+  L_ref_cell <- vapply(pick$disease, function(dis) ref_ex_at_age(age_at_death_for_disease(dis)), numeric(1))
   
   # Per-country national LE over the conflict window (keyed by ISO3).
   le_nat <- conflict_df %>%
@@ -420,7 +372,7 @@ rerun_yll_headline <- function(gap_df, covariates = covariates_panel,
                                vaccine_disease = vaccine_disease_links,
                                gap_transform = function(x) x,
                                cov_transform = function(x) x,
-                               n_sim = 3000L, seed = 42, methods = NULL,
+                               n_sim = 3000L, seed = SEED_MC, methods = NULL,
                                anchor_priority = c("Synthetic Control",
                                                    "DiD (CS)", "Baseline (3yr)")) {
   gd <- gap_transform(gap_df)
@@ -441,10 +393,7 @@ revision_covid_excluded_headline <- function(gap_df, yll_draws,
   full <- assemble_headline_totals(yll_draws)
   if (is.null(full)) { message("  (R1b): no full headline -> skip."); return(invisible(NULL)) }
   drop_fun <- function(x) dplyr::filter(x, !(year %in% drop_years))
-  rr <- tryCatch(
-    rerun_yll_headline(gap_df, covariates = covariates,
-                       gap_transform = drop_fun, n_sim = n_sim),
-    error = function(e) { message("  (R1b) re-run failed: ", conditionMessage(e)); NULL })
+  rr <- rerun_yll_headline(gap_df, covariates = covariates, gap_transform = drop_fun, n_sim = n_sim)
   if (is.null(rr) || is.null(rr$headline)) return(invisible(NULL))
   f <- full$composite_10country; x <- rr$headline$composite_10country
   out <- tibble::tibble(
@@ -485,10 +434,7 @@ revision_pertussis_uncertainty <- function(gap_df, yll_draws,
     x$Pertussis_Inc_Sigma <- pmax(s, target_sigma)
     x
   }
-  rr <- tryCatch(
-    rerun_yll_headline(gap_df, covariates = covariates,
-                       cov_transform = infl, n_sim = n_sim),
-    error = function(e) { message("  (R3) re-run failed: ", conditionMessage(e)); NULL })
+  rr <- rerun_yll_headline(gap_df, covariates = covariates, cov_transform = infl, n_sim = n_sim)
   if (is.null(rr) || is.null(rr$headline)) return(invisible(NULL))
   f <- full$composite_10country; x <- rr$headline$composite_10country
   out <- tibble::tibble(
@@ -511,36 +457,126 @@ revision_pertussis_uncertainty <- function(gap_df, yll_draws,
 # ============================================================================
 # No-re-run blocks (R5, R1a, R2, R10, R7) always run. The re-run blocks (R1b, R3)
 # are opt-in via CVD_RUN_REVISION_RERUNS=TRUE (each re-runs run_full_yll once).
-run_revision_analyses <- function(yll_raw, gap_df,
-                                  covariates = covariates_panel,
-                                  conflict_df = conflict_info,
-                                  rerun_nsim = 3000L) {
-  message("\n>>> Revision analyses (R5/R1/R2/R10/R7) <<<\n")
+run_revision_analyses <- function(yll_raw, gap_df, covariates = covariates_panel,
+                                  conflict_df = conflict_info, rerun_nsim = 3000L, reruns = TRUE) {
   res <- list()
-  res$temporal   <- tryCatch(revision_temporal_concentration(yll_raw$summary, gap_df, yll_raw$draws,
-                                                             conflict_df = conflict_df),
-                             error = function(e) { message("  (R5) skipped: ", conditionMessage(e)); NULL })
-  res$pandemic   <- tryCatch(revision_pandemic_share(yll_raw$summary, yll_raw$draws),
-                             error = function(e) { message("  (R1a) skipped: ", conditionMessage(e)); NULL })
-  res$loo        <- tryCatch(revision_leave_one_out(yll_raw$draws),
-                             error = function(e) { message("  (R2) skipped: ", conditionMessage(e)); NULL })
-  res$by_anchor  <- tryCatch(revision_composite_by_anchor(yll_raw$draws),
-                             error = function(e) { message("  (R10) skipped: ", conditionMessage(e)); NULL })
-  res$corners    <- tryCatch(revision_convention_corners(yll_raw$draws, covariates = covariates,
-                                                         conflict_df = conflict_df),
-                             error = function(e) { message("  (R7) skipped: ", conditionMessage(e)); NULL })
-  
-  run_reruns <- isTRUE(as.logical(Sys.getenv("CVD_RUN_REVISION_RERUNS", unset = "TRUE")))
-  if (run_reruns) {
-    message("\n  Re-run blocks ON (CVD_RUN_REVISION_RERUNS=TRUE; n_sim = ", rerun_nsim, ").")
-    res$covid      <- tryCatch(revision_covid_excluded_headline(gap_df, yll_raw$draws,
-                                                                covariates = covariates, n_sim = rerun_nsim),
-                               error = function(e) { message("  (R1b) skipped: ", conditionMessage(e)); NULL })
-    res$pertussis  <- tryCatch(revision_pertussis_uncertainty(gap_df, yll_raw$draws,
-                                                              covariates = covariates, n_sim = rerun_nsim),
-                               error = function(e) { message("  (R3) skipped: ", conditionMessage(e)); NULL })
-  } else {
-    message("\n  Re-run blocks OFF (set CVD_RUN_REVISION_RERUNS=TRUE for R1b COVID-excluded + R3 pertussis-sigma; each re-runs run_full_yll once).")
+  res$temporal  <- revision_temporal_concentration(yll_raw$summary, gap_df, yll_raw$draws, conflict_df = conflict_df)
+  res$pandemic  <- revision_pandemic_share(yll_raw$summary, yll_raw$draws)
+  res$loo       <- revision_leave_one_out(yll_raw$draws)
+  res$by_anchor <- revision_composite_by_anchor(yll_raw$draws)
+  res$corners   <- revision_convention_corners(yll_raw$draws, covariates = covariates, conflict_df = conflict_df)
+  if (reruns) {   # each re-runs run_full_yll once (n_sim = 3000, seed SEED_MC)
+    res$covid     <- revision_covid_excluded_headline(gap_df, yll_raw$draws, covariates = covariates, n_sim = rerun_nsim)
+    res$pertussis <- revision_pertussis_uncertainty(gap_df, yll_raw$draws, covariates = covariates, n_sim = rerun_nsim)
   }
   invisible(res)
+}
+
+# ============================================================================
+# (S14) INCIDENCE BASIS: timing-adjusted (headline) vs full-year phi = 1 (upper) vs none (lower)
+# ============================================================================
+INC_BASIS_LABELS <- c(
+  unvaccinated_timed = "Unvaccinated-infant incidence, timing-adjusted (headline)",
+  unvaccinated       = "Unvaccinated-infant incidence, full-year correction (phi = 1)",
+  population         = "All-infant incidence, no correction")
+
+.ibs_q <- function(v) c(mean = mean(v), lo = stats::quantile(v, .025, names = FALSE),
+                        hi = stats::quantile(v, .975, names = FALSE))
+
+# Headline-scenario rows only (catch-up 0, headline framing), non-empty draws.
+.ibs_headline_rows <- function(d) {
+  d <- d %>% dplyr::filter(catchup == 0, framing == FRAMING_HEADLINE)
+  d[vapply(d$d_undisc, function(x) !is.null(x) && length(x) > 0, logical(1)), , drop = FALSE]
+}
+
+# Composite pick: same priority rule as assemble_headline_totals() (05).
+.ibs_composite <- function(d, prio = c("Synthetic Control", "DiD (CS)", "Baseline (3yr)")) {
+  d %>% dplyr::filter(method %in% prio) %>%
+    dplyr::mutate(.p = match(method, prio)) %>%
+    dplyr::group_by(disease, country) %>%
+    dplyr::slice_min(.p, n = 1, with_ties = FALSE) %>% dplyr::ungroup()
+}
+
+.ibs_summarise <- function(draws, basis) {
+  h  <- .ibs_headline_rows(draws)
+  cp <- .ibs_composite(h)
+  row <- function(scope, group, v) {
+    s <- .ibs_q(v)
+    tibble::tibble(basis = basis, scope = scope, group = group,
+                   yll_mean = s["mean"], yll_lo = s["lo"], yll_hi = s["hi"])
+  }
+  tot <- function(rows, col = "d_undisc") colSums(do.call(rbind, rows[[col]]))
+  out <- list(
+    row("Composite (10-country, best-available)", "All", tot(cp)),
+    row("Composite, discounted 3%", "All", tot(cp, "d_disc")),
+    row("SC (7-country complete-case)", "All",
+        tot(h %>% dplyr::filter(method == "Synthetic Control"))),
+    row("DiD (CS), 10-country", "All", tot(h %>% dplyr::filter(method == "DiD (CS)"))))
+  for (dz in sort(unique(cp$disease)))
+    out[[length(out) + 1]] <- row("Composite by disease", dz,
+                                  tot(cp %>% dplyr::filter(disease == dz)))
+  # 7-country complete case per method (same rule as aggregate_global_by_method_draws)
+  nm <- dplyr::n_distinct(h$method)
+  cc <- h %>% dplyr::distinct(disease, country, method) %>%
+    dplyr::count(disease, country) %>% dplyr::filter(n == nm)
+  hc <- h %>% dplyr::semi_join(cc, by = c("disease", "country"))
+  for (m in unique(hc$method))
+    out[[length(out) + 1]] <- row("By estimator (complete-case)", m,
+                                  tot(hc %>% dplyr::filter(method == m)))
+  dplyr::bind_rows(out)
+}
+
+run_incidence_basis_sensitivity <- function(gap_df, yll_draws_headline,
+                                            covariates  = covariates_panel,
+                                            conflict_df = conflict_info,
+                                            tornado_tab = NULL,
+                                            n_sim = N_SIM, methods = NULL) {
+  message("\n>>> Incidence-basis sensitivity (S14) <<<\n")
+  basis_main <- INC_BASIS
+  draws <- list(); draws[[basis_main]] <- .ibs_headline_rows(yll_draws_headline)
+  alts <- setdiff(names(INC_BASIS_LABELS), basis_main)
+  on.exit(assign("INC_BASIS", basis_main, envir = .GlobalEnv), add = TRUE)
+  for (b in alts) {
+    message("  Re-running YLL Monte Carlo under INC_BASIS = '", b, "' ...")
+    assign("INC_BASIS", b, envir = .GlobalEnv)
+    r <- suppressMessages(run_full_yll(gap_df, covariates, conflict_df,
+                                       n_sim = n_sim, methods = methods))
+    draws[[b]] <- .ibs_headline_rows(r$draws); rm(r)
+  }
+  assign("INC_BASIS", basis_main, envir = .GlobalEnv)
+
+  tab <- dplyr::bind_rows(lapply(names(draws), function(b) .ibs_summarise(draws[[b]], b)))
+  ref <- tab %>% dplyr::filter(basis == basis_main) %>%
+    dplyr::select(scope, group, ref_mean = yll_mean)
+  tab <- tab %>% dplyr::left_join(ref, by = c("scope", "group")) %>%
+    dplyr::mutate(pct_vs_headline = 100 * (yll_mean - ref_mean) / ref_mean,
+                  basis_label = unname(INC_BASIS_LABELS[basis]),
+                  is_headline = basis == basis_main) %>%
+    dplyr::select(basis, basis_label, is_headline, scope, group,
+                  yll_mean, yll_lo, yll_hi, pct_vs_headline) %>%
+    dplyr::arrange(scope, group, dplyr::desc(is_headline), basis)
+  save_tab(tab, "Table_S14_incidence_basis.csv")
+  saveRDS(draws, file.path(OUT_DIR, "yll_draws_headline_scenario.rds"))
+
+  comp <- tab %>% dplyr::filter(scope == "Composite (10-country, best-available)")
+  for (i in seq_len(nrow(comp)))
+    message(sprintf("  %-62s %s (%s-%s)  %+.1f%%", comp$basis_label[i],
+                    format(round(comp$yll_mean[i]), big.mark = ","),
+                    format(round(comp$yll_lo[i]), big.mark = ","),
+                    format(round(comp$yll_hi[i]), big.mark = ","), comp$pct_vs_headline[i]))
+
+  # Append the two alternates to the composite tornado (exact re-run rows).
+  if (!is.null(tornado_tab)) {
+    lab <- c(unvaccinated = "full-year incidence correction (phi = 1)",
+             population = "no incidence correction",
+             unvaccinated_timed = "timing-adjusted incidence correction")
+    for (b in alts) {
+      r <- comp[comp$basis == b, ]
+      tornado_tab <- merge_rerun(tornado_tab, scenario = unname(lab[b]),
+                                 axis = "incidence_basis", yll_mean = r$yll_mean,
+                                 lo = r$yll_lo, hi = r$yll_hi)
+    }
+    save_tab(tornado_tab, "Table_S5_structured_sensitivity.csv")
+  }
+  invisible(list(table = tab, tornado = tornado_tab, draws = draws))
 }
