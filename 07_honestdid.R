@@ -1,3 +1,8 @@
+# 07_honestdid.R | in: attr(gap_df, "cs_attgt") | out: Table_S3 (relative magnitude), Table_S3b (smoothness), Figure_S_honestdid_sensitivity | Methods: Sensitivity (ii) parallel trends
+# Rambachan & Roth (2023) bounds on the CS event study, e in [-5, 5]; targets: on-impact (e=0) and mean of e=0..4.
+# Bridge honest_did.AGGTEobj adapted from P. Sant'Anna (github.com/pedrohcgs/CS_RR). Breakdown = smallest
+# restriction whose robust CI includes 0. Smoothness M is in percentage points.
+
 # ---- vendored bridge: honest_did for {did} AGGTEobj (Sant'Anna, CS_RR) ------
 honest_did <- function(...) UseMethod("honest_did")
 
@@ -29,6 +34,13 @@ honest_did.AGGTEobj <- function(es, e = 0,
          ncol(V), "); influence function and point estimates are misaligned.")
   
   # ---- assemble the event-study window, dimension-safe -------------------
+  # HonestDiD's convention: betahat = (pre-coefs ascending, post-coefs ascending)
+  # with the universal-base reference (e = -1, att == 0, zero-variance row/col)
+  # OMITTED; pre block is e <= -2, post block is e >= 0. Retaining e = -1 makes
+  # sigma singular. We grow OUTWARD from the reference on each side, keeping only
+  # estimable, contiguous integer event-times within [min_e, max_e]; this honours
+  # Roth's [-5,5] guidance and silently survives any non-estimable interior cell
+  # (which would otherwise feed NA into HonestDiD).
   estimable <- is.finite(beta) & is.finite(diag(V))
   est_at <- function(et) {
     idx <- match(et, egt)
@@ -53,6 +65,11 @@ honest_did.AGGTEobj <- function(es, e = 0,
   npost   <- length(post_e)
   
   # ---- target l_vec: single horizon e, OR an average over an event-time window
+  # avg_window = c(lo, hi). The averaged target is the estimand the BURDEN uses
+  # (the gap accumulates over event-time; the on-impact coefficient understates
+  # it for the lagged MCV1/DTP3 arms). l_vec puts equal weight on the estimable
+  # post-periods inside the window (clipped to the estimable post block), which is
+  # exactly HonestDiD's mechanism for a weighted post-period effect.
   if (!is.null(avg_window)) {
     lv <- .hd_avg_lvec(post_e, avg_window)        # equal-weight over window
     baseVec1 <- lv$l_vec
@@ -86,7 +103,9 @@ honest_did.AGGTEobj <- function(es, e = 0,
        npre = npre, npost = npost, egt = sel_e, target_e = target_e)
 }
 
-
+# Equal-weight averaging l_vec over the estimable post-periods inside an event-
+# time window. `post_e` is the ascending vector of estimable post event-times
+# (length npost); the window is clipped to it. Pure base R (unit-tested).
 .hd_avg_lvec <- function(post_e, window) {
   if (length(window) != 2L || any(!is.finite(window)))
     stop(".hd_avg_lvec: window must be c(lo, hi) finite.")
@@ -101,6 +120,13 @@ honest_did.AGGTEobj <- function(es, e = 0,
 }
 
 # ---- breakdown value -------------------------------------------------------
+# Smallest restriction parameter (Mbar or M) at which the robust CI first
+# includes 0 (i.e. the conflict effect is no longer distinguishable from 0).
+# Returns Inf if every tested restriction still excludes 0 (very robust),
+# the smallest grid value if even the tightest robust CI already includes 0
+# (not identified at any tested restriction). ALWAYS returns a numeric scalar:
+# returning c(value=<num>, par=<chr>) silently coerced the value to character,
+# which then broke sprintf("%.2f", .) downstream and aborted the table write.
 .breakdown_value <- function(robust_ci) {
   rc <- robust_ci
   par_col <- if ("Mbar" %in% names(rc)) "Mbar" else "M"
@@ -111,17 +137,12 @@ honest_did.AGGTEobj <- function(es, e = 0,
   rc[[par_col]][which(includes0)[1]]
 }
 
-# Local table writer: prefer the pipeline's save_tab (05); fall back to a plain
-# CSV write so a standalone run of this module still persists Table_S3/S3b.
-.hd_save_tab <- function(df, file, out_dir) {
-  if (exists("save_tab", mode = "function")) return(save_tab(df, file))
-  dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
-  path <- file.path(out_dir, file)
-  utils::write.csv(df, path, row.names = FALSE)
-  message("  [HonestDiD] wrote ", path, " (save_tab() not found; used write.csv).")
-}
+.hd_save_tab <- function(df, file, out_dir) save_tab(df, file)
 
 # ---- per-(vaccine,target) runner -------------------------------------------
+# Runs both restriction families for ONE target (a single horizon e, or an
+# event-time average window) and returns tagged robust-CI rows. Factored out so
+# the on-impact and post-period-average horizons share identical error handling.
 .hd_run_target <- function(dyn, vacc, target, min_e, max_e, Mbar_grid, M_grid) {
   hz <- target$label
   errs <- character(0)
@@ -171,6 +192,18 @@ honest_did.AGGTEobj <- function(es, e = 0,
 }
 
 # ---- driver ----------------------------------------------------------------
+# Consumes attr(gap_df, "cs_attgt") (named list of att_gt objects by vaccine).
+# For each vaccine: aggregate the FULL dynamic event study, then for EACH target
+# horizon run both restriction families over a grid (trimming to [min_e,max_e]
+# inside the bridge) and record the original CI + breakdown.
+#
+# TWO horizons by default (a review fix): the on-impact coefficient (e=0) AND the
+# post-period AVERAGE over `avg_window` (default e in [0,4]). The averaged target
+# is the headline robustness read, because the YLL burden is driven by the gap
+# ACCUMULATED over event time (S2d), not the on-impact year -- bounding PT
+# violations only at e=0 understates robustness for the lagged MCV1/DTP3 arms,
+# whose on-impact CI already straddles 0. Set avg_window = NULL to recover the
+# e=0-only behaviour. Tables gain a `horizon` column.
 run_honest_did <- function(gap_df,
                            e = 0, min_e = -5L, max_e = 5L,
                            avg_window = c(0L, 4L),
@@ -178,14 +211,7 @@ run_honest_did <- function(gap_df,
                            # smoothness M is in OUTCOME (percentage-point) units;
                            # see header. Was c(0,0.01,..,0.05) -> ~100x too tight.
                            M_grid    = c(0, 0.5, 1, 1.5, 2),
-                           out_dir = if (exists("TAB_DIR")) TAB_DIR
-                           else if (exists("OUT_DIR")) OUT_DIR else ".") {
-  if (!requireNamespace("did", quietly = TRUE) ||
-      !requireNamespace("HonestDiD", quietly = TRUE)) {
-    message("  HonestDiD: need both {did} and {HonestDiD} -> skipping ",
-            "(install.packages(c('did','HonestDiD'))).")
-    return(invisible(NULL))
-  }
+                           out_dir = TAB_DIR) {
   attgt <- attr(gap_df, "cs_attgt")
   if (is.null(attgt) || length(attgt) == 0) {
     message("  HonestDiD: attr(gap_df,'cs_attgt') is empty -> DiD not run, or ",
@@ -233,7 +259,9 @@ run_honest_did <- function(gap_df,
   sm_tab <- dplyr::bind_rows(rows_sm)
   es_all <- dplyr::bind_rows(es_tab)
   
-  # WRITE TABLES FIRST
+  # WRITE TABLES FIRST. The deliverables are persisted before any (non-essential)
+  # console diagnostics, so a formatting slip in a diagnostic can never again
+  # abort the save. Both writes go through the save_tab/write.csv fallback.
   if (nrow(rm_tab) > 0) .hd_save_tab(rm_tab, "Table_S3_honestdid_relative_magnitude.csv", out_dir)
   if (nrow(sm_tab) > 0) .hd_save_tab(sm_tab, "Table_S3b_honestdid_smoothness.csv",        out_dir)
   
@@ -246,7 +274,9 @@ run_honest_did <- function(gap_df,
     else for (m in errs) message("    - ", m)
   }
   
-  # SELF-TEST / DIAGNOSTICS
+  # SELF-TEST / DIAGNOSTICS (wrapped: must never block the outputs above) ----
+  # (1) robust CIs should (weakly) widen as the restriction relaxes;
+  # (2) breakdown is a finite grid value or Inf.
   tryCatch({
     if (nrow(rm_tab) > 0) {
       chk <- rm_tab %>% dplyr::group_by(vaccine, horizon) %>%
@@ -275,7 +305,7 @@ run_honest_did <- function(gap_df,
   fig <- tryCatch(.fig_honest_did(rm_tab, es_all),
                   error = function(err) { message("  HonestDiD fig skipped: ",
                                                   conditionMessage(err)); NULL })
-  if (!is.null(fig) && exists("save_fig"))
+  if (!is.null(fig))
     save_fig(fig, "Figure_S_honestdid_sensitivity", width = 11, height = 5.5)
   
   invisible(list(relative_magnitude = rm_tab, smoothness = sm_tab,
@@ -307,5 +337,5 @@ run_honest_did <- function(gap_df,
       subtitle = paste0("Rows: on-impact (e=0) vs post-period average. Robust 95% CI ",
                         "widens as Mbar relaxes; breakdown = smallest Mbar whose CI includes 0."),
       caption = "Rambachan & Roth (2023). Original = CI under exact parallel trends.") +
-    { if (exists("theme_nm")) theme_nm() else ggplot2::theme_minimal() }
+    theme_nm()
 }
